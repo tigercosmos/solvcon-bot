@@ -1,6 +1,7 @@
 #include "config.hpp"
 #include "github_client.hpp"
 #include "github_types.hpp"
+#include "log.hpp"
 #include "reviewer.hpp"
 #include "state_store.hpp"
 #include "watcher.hpp"
@@ -37,11 +38,6 @@ void install_signal_handlers()
     signal(SIGPIPE, SIG_IGN);
 }
 
-void log_info(const std::string & msg)
-{
-    std::cerr << "[modmesh-bot] " << msg << std::endl;
-}
-
 } // namespace
 
 int main()
@@ -49,13 +45,14 @@ int main()
     try
     {
         auto cfg = modmesh_bot::Config::from_env();
-        log_info("starting modmesh-bot " MODMESH_BOT_VERSION
-                 " repo=" + cfg.github_owner + "/" + cfg.github_repo
-                 + " bot=@" + cfg.bot_handle
-                 + " poll=" + std::to_string(cfg.poll_interval_sec) + "s");
+        modmesh_bot::log_info("main",
+            std::string("starting modmesh-bot ") + MODMESH_BOT_VERSION
+            + " repo=" + cfg.github_owner + "/" + cfg.github_repo
+            + " bot=@" + cfg.bot_handle
+            + " poll=" + std::to_string(cfg.poll_interval_sec) + "s");
 
         modmesh_bot::StateStore state(cfg.state_file);
-        log_info("state file locked: " + cfg.state_file);
+        modmesh_bot::log_info("main", "state file locked: " + cfg.state_file);
 
         modmesh_bot::GithubClient gh(cfg);
         modmesh_bot::Reviewer rv(cfg);
@@ -76,20 +73,20 @@ int main()
                 // looping would just keep failing. Surface to operator.
                 if (e.status() == 401 || e.status() == 403 || e.status() == 422)
                 {
-                    std::cerr << "[modmesh-bot] fatal HTTP " << e.status()
-                              << ": " << e.what()
-                              << " — exiting non-zero so operator notices"
-                              << std::endl;
+                    modmesh_bot::log_error("main",
+                        "fatal HTTP " + std::to_string(e.status()) + ": "
+                        + e.what() + " — exiting non-zero so operator notices");
                     state.save();
                     return 1;
                 }
-                std::cerr << "[modmesh-bot] tick GithubError "
-                          << e.status() << ": " << e.what() << std::endl;
+                modmesh_bot::log_warn("main",
+                    "tick GithubError " + std::to_string(e.status()) + ": "
+                    + e.what());
             }
             catch (const std::exception & e)
             {
-                std::cerr << "[modmesh-bot] tick error: " << e.what()
-                          << std::endl;
+                modmesh_bot::log_warn("main",
+                    std::string("tick error: ") + e.what());
             }
             // Sleep in short slices so signals interrupt within ~1s.
             for (int i = 0; i < cfg.poll_interval_sec && g_stop == 0; ++i)
@@ -98,13 +95,13 @@ int main()
             }
         }
 
-        log_info("shutting down");
+        modmesh_bot::log_info("main", "shutting down");
         state.save();
         return 0;
     }
     catch (const std::exception & e)
     {
-        std::cerr << "[modmesh-bot] fatal: " << e.what() << std::endl;
+        modmesh_bot::log_error("main", std::string("fatal: ") + e.what());
         return 1;
     }
 }

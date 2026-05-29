@@ -271,8 +271,18 @@ struct GithubClient::Impl
             const int status = res->status;
             if (status >= 200 && status < 300) return res;
 
-            // Retryable: 429 (rate limit) + 5xx, GETs only.
-            if (is_get && (status == 429 || (status >= 500 && status < 600)))
+            // GitHub returns 403 both for "you lack the scope" (fatal) and
+            // for rate-limit / secondary-rate-limit (transient). The
+            // transient form is identified by either Retry-After being
+            // set or X-RateLimit-Remaining being "0". Treat that variant
+            // like 429; let the truly-fatal 403 fall through.
+            const bool rate_limited_403 = (status == 403)
+                && (!header(res, "Retry-After").empty()
+                    || header(res, "X-RateLimit-Remaining") == "0");
+
+            // Retryable: 429 + 5xx + rate-limit 403, GETs only.
+            if (is_get && (status == 429 || rate_limited_403
+                           || (status >= 500 && status < 600)))
             {
                 if (attempt >= max_attempts)
                 {

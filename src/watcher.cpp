@@ -2,13 +2,13 @@
 
 #include "github_client.hpp"
 #include "github_types.hpp"
+#include "log.hpp"
 #include "mention.hpp"
 #include "reviewer.hpp"
 #include "state_store.hpp"
 
 #include <algorithm>
 #include <exception>
-#include <iostream>
 #include <sstream>
 #include <string>
 
@@ -18,19 +18,21 @@ namespace modmesh_bot
 namespace
 {
 
-void log_info(const std::string & msg)
-{
-    std::cerr << "[modmesh-bot] " << msg << std::endl;
-}
+inline void log_info(const std::string & m) { modmesh_bot::log_info("watcher", m); }
+inline void log_warn(const std::string & m) { modmesh_bot::log_warn("watcher", m); }
+inline void log_err (const std::string & m) { modmesh_bot::log_error("watcher", m); }
 
-void log_warn(const std::string & msg)
+// 401/403/422 are not transient: continuing to retry would just keep
+// failing and the operator would never notice. These get re-thrown out
+// of every catch so they reach main() and exit the process non-zero.
+inline bool is_fatal_github(const std::exception & e)
 {
-    std::cerr << "[modmesh-bot] warn: " << msg << std::endl;
-}
-
-void log_err(const std::string & msg)
-{
-    std::cerr << "[modmesh-bot] error: " << msg << std::endl;
+    if (auto * ge = dynamic_cast<const GithubError *>(&e))
+    {
+        const int s = ge->status();
+        return s == 401 || s == 403 || s == 422;
+    }
+    return false;
 }
 
 std::string trigger_str(std::optional<long long> trigger_comment_id)
@@ -115,6 +117,7 @@ void Watcher::run_auto_path()
     }
     catch (const std::exception & e)
     {
+        if (is_fatal_github(e)) throw;
         log_warn(std::string("list_open_prs failed: ") + e.what());
         return;
     }
@@ -130,6 +133,7 @@ void Watcher::run_auto_path()
         }
         catch (const std::exception & e)
         {
+            if (is_fatal_github(e)) throw;
             log_warn("list_reviews(" + std::to_string(pr.number)
                      + ") failed: " + e.what());
             continue;
@@ -161,6 +165,7 @@ void Watcher::run_auto_path()
                 }
                 catch (const std::exception & e)
                 {
+                    if (is_fatal_github(e)) throw;
                     log_warn("list_pr_comments(" + std::to_string(pr.number)
                              + ") failed: " + e.what());
                     // Bail on this PR; we'll retry next tick.
@@ -175,6 +180,7 @@ void Watcher::run_auto_path()
                     }
                     catch (const std::exception & e)
                     {
+                        if (is_fatal_github(e)) throw;
                         log_err("dispatch_review(" + std::to_string(pr.number)
                                 + ") failed: " + e.what());
                         // Do NOT mark reviewed; retry next tick.
@@ -209,6 +215,7 @@ void Watcher::run_ping_path()
     }
     catch (const std::exception & e)
     {
+        if (is_fatal_github(e)) throw;
         log_warn(std::string("list_issue_comments failed: ") + e.what());
         return;
     }
@@ -254,6 +261,7 @@ void Watcher::run_ping_path()
             }
             catch (const std::exception & e)
             {
+                if (is_fatal_github(e)) throw;
                 log_warn("ping: get_issue_detail("
                          + std::to_string(issue_number) + ") failed: "
                          + e.what());
@@ -285,6 +293,7 @@ void Watcher::run_ping_path()
             }
             catch (const std::exception & e)
             {
+                if (is_fatal_github(e)) throw;
                 log_warn("ping: list_pr_comments("
                          + std::to_string(detail.number) + ") failed: "
                          + e.what());
@@ -306,6 +315,7 @@ void Watcher::run_ping_path()
             }
             catch (const std::exception & e)
             {
+                if (is_fatal_github(e)) throw;
                 log_err("ping: dispatch_review("
                         + std::to_string(detail.number) + ") failed: "
                         + e.what());

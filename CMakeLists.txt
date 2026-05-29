@@ -26,6 +26,7 @@ set_target_properties(modmesh-json PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # Our library — main.cpp links against this; tests link against this too.
 add_library(modmesh-bot-lib STATIC
+    src/log.cpp
     src/config.cpp
     src/state_store.cpp
     src/github_types.cpp
