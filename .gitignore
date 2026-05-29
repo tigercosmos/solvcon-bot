@@ -1,0 +1,6 @@
+/build/
+/modmesh-bot.state
+/modmesh-bot.state.tmp
+/modmesh-bot.state.lock
+*.o
+.DS_Store

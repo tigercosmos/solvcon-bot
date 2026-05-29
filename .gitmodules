@@ -1,0 +1,3 @@
+[submodule "third_party/modmesh"]
+	path = third_party/modmesh
+	url = https://github.com/solvcon/modmesh
