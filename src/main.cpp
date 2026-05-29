@@ -1,5 +1,6 @@
 #include "config.hpp"
 #include "github_client.hpp"
+#include "github_types.hpp"
 #include "reviewer.hpp"
 #include "state_store.hpp"
 #include "watcher.hpp"
@@ -68,6 +69,22 @@ int main()
             try
             {
                 watcher.tick();
+            }
+            catch (const modmesh_bot::GithubError & e)
+            {
+                // 401/403/422 from GitHub are not transient — keep
+                // looping would just keep failing. Surface to operator.
+                if (e.status() == 401 || e.status() == 403 || e.status() == 422)
+                {
+                    std::cerr << "[modmesh-bot] fatal HTTP " << e.status()
+                              << ": " << e.what()
+                              << " — exiting non-zero so operator notices"
+                              << std::endl;
+                    state.save();
+                    return 1;
+                }
+                std::cerr << "[modmesh-bot] tick GithubError "
+                          << e.status() << ": " << e.what() << std::endl;
             }
             catch (const std::exception & e)
             {

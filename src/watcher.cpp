@@ -6,6 +6,7 @@
 #include "reviewer.hpp"
 #include "state_store.hpp"
 
+#include <algorithm>
 #include <exception>
 #include <iostream>
 #include <sstream>
@@ -76,11 +77,22 @@ LiveWatcherIo::LiveWatcherIo(GithubClient & gh, Reviewer & rv, StateStore & stat
 std::vector<PrSummary> LiveWatcherIo::list_open_prs() { return gh_.list_open_prs(); }
 std::vector<Review> LiveWatcherIo::list_reviews(int n) { return gh_.list_reviews(n); }
 std::vector<IssueComment> LiveWatcherIo::list_pr_comments(int n) { return gh_.list_pr_comments(n); }
+std::vector<IssueComment> LiveWatcherIo::list_issue_comments(const std::string & since)
+{ return gh_.list_issue_comments(since); }
 DiffResult LiveWatcherIo::stream_diff(int n) { return gh_.stream_diff(n); }
 void LiveWatcherIo::post_comment(int n, const std::string & b) { gh_.post_comment(n, b); }
+PrDetail LiveWatcherIo::get_issue_detail(int n) { return gh_.get_issue_detail(n); }
+bool LiveWatcherIo::is_collaborator(const std::string & u) { return gh_.is_collaborator(u); }
 std::string LiveWatcherIo::run_reviewer(const std::string & d) { return rv_.run(d); }
 bool LiveWatcherIo::reviewed(int n) { return state_.reviewed(n); }
 void LiveWatcherIo::mark_reviewed(int n) { state_.mark_reviewed(n); }
+bool LiveWatcherIo::handled(std::int64_t id) { return state_.handled(id); }
+void LiveWatcherIo::mark_handled(std::int64_t id) { state_.mark_handled(id); }
+std::string LiveWatcherIo::cursor_updated_at() { return state_.cursor_updated_at(); }
+bool LiveWatcherIo::is_at_or_before_cursor(const std::string & u, std::int64_t id)
+{ return state_.is_at_or_before_cursor(u, id); }
+void LiveWatcherIo::advance_cursor(const std::string & u, std::int64_t id)
+{ state_.advance_cursor(u, id); }
 void LiveWatcherIo::save_state() { state_.save(); }
 
 // --- Watcher --------------------------------------------------------------
@@ -91,6 +103,7 @@ Watcher::Watcher(const Config & cfg, WatcherIo & io)
 void Watcher::tick()
 {
     run_auto_path();
+    run_ping_path();
 }
 
 void Watcher::run_auto_path()
@@ -183,6 +196,143 @@ void Watcher::run_auto_path()
                 }
                 break; // stop scanning reviews for this PR
             }
+        }
+    }
+}
+
+void Watcher::run_ping_path()
+{
+    std::vector<IssueComment> comments;
+    try
+    {
+        comments = io_.list_issue_comments(io_.cursor_updated_at());
+    }
+    catch (const std::exception & e)
+    {
+        log_warn(std::string("list_issue_comments failed: ") + e.what());
+        return;
+    }
+
+    // Defensive sort by (updated_at, id). GitHub returns them sorted by
+    // updated ascending per our query string, but we re-sort here so
+    // cursor tuple-compare semantics hold even if same-updated_at items
+    // arrive in id order other than ascending.
+    std::sort(comments.begin(), comments.end(),
+        [](const IssueComment & a, const IssueComment & b) {
+            if (a.updated_at != b.updated_at) return a.updated_at < b.updated_at;
+            return a.id < b.id;
+        });
+
+    for (const auto & c : comments)
+    {
+        // Classify this comment. The lambda returns true iff the
+        // decision is durable (mark_handled + advance_cursor); a return
+        // of false means transient failure and we'll retry next tick.
+        // A lambda is used so that early-out branches (resolved without
+        // dispatch) don't accidentally `continue` past the durable-state
+        // commit at the bottom of the loop body.
+        auto classify = [&]() -> bool {
+            // GitHub returns >= since on updated_at; tuple-filter to skip
+            // anything we've already classified.
+            if (io_.is_at_or_before_cursor(c.updated_at, c.id)) return true;
+            if (io_.handled(c.id)) return true;
+            if (eq_login(c.user.login, cfg_.bot_handle)) return true;
+            if (!mention_matches(c.body, cfg_.bot_handle)) return true;
+
+            const int issue_number = parse_issue_number_from_url(c.issue_url);
+            if (issue_number <= 0)
+            {
+                log_warn("ping: could not extract issue number from URL: "
+                         + c.issue_url);
+                return true;
+            }
+
+            PrDetail detail;
+            try
+            {
+                detail = io_.get_issue_detail(issue_number);
+            }
+            catch (const std::exception & e)
+            {
+                log_warn("ping: get_issue_detail("
+                         + std::to_string(issue_number) + ") failed: "
+                         + e.what());
+                return false; // transient
+            }
+
+            if (!detail.is_pr || detail.state != "open") return true;
+
+            const bool is_collab = io_.is_collaborator(c.user.login);
+            // 403 from is_collaborator propagates as exception — fatal per
+            // plan §6 (token scope problem). is_collaborator returns
+            // false for 404 (not a collaborator).
+            if (!is_collab) return true;
+
+            const std::string marker_key = build_marker_key(
+                "ping", detail.number, c.id);
+            bool already_posted = false;
+            try
+            {
+                for (const auto & pc : io_.list_pr_comments(detail.number))
+                {
+                    if (eq_login(pc.user.login, cfg_.bot_handle)
+                        && body_has_marker_key(pc.body, marker_key))
+                    {
+                        already_posted = true;
+                        break;
+                    }
+                }
+            }
+            catch (const std::exception & e)
+            {
+                log_warn("ping: list_pr_comments("
+                         + std::to_string(detail.number) + ") failed: "
+                         + e.what());
+                return false; // transient
+            }
+
+            if (already_posted)
+            {
+                log_info("ping: marker already present for PR #"
+                         + std::to_string(detail.number)
+                         + " comment=" + std::to_string(c.id)
+                         + " — skipping dispatch");
+                return true;
+            }
+
+            try
+            {
+                dispatch_review(detail.number, "ping", c.id);
+            }
+            catch (const std::exception & e)
+            {
+                log_err("ping: dispatch_review("
+                        + std::to_string(detail.number) + ") failed: "
+                        + e.what());
+                return false; // transient
+            }
+            return true;
+        };
+
+        const bool decided = classify();
+        if (decided)
+        {
+            io_.mark_handled(c.id);
+            io_.advance_cursor(c.updated_at, c.id);
+            try { io_.save_state(); }
+            catch (const std::exception & e)
+            {
+                log_err(std::string("state save failed: ") + e.what());
+            }
+        }
+        else
+        {
+            // Transient failure on this comment. We must NOT process
+            // later comments in this tick: doing so would advance the
+            // cursor past this one and we'd never retry it.
+            log_warn("ping: leaving comment " + std::to_string(c.id)
+                     + " for retry on next tick");
+            return;
         }
     }
 }
