@@ -29,6 +29,7 @@ add_library(modmesh-bot-lib STATIC
     src/config.cpp
     src/state_store.cpp
     src/github_types.cpp
+    src/github_client.cpp
 )
 target_include_directories(modmesh-bot-lib PUBLIC src)
 target_include_directories(modmesh-bot-lib SYSTEM PUBLIC third_party/cpp-httplib)
