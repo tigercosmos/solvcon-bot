@@ -22,3 +22,8 @@ add_executable(test_reviewer test_reviewer.cpp)
 target_link_libraries(test_reviewer PRIVATE modmesh-bot-lib)
 target_compile_options(test_reviewer PRIVATE -Wall -Wextra -Werror)
 add_test(NAME reviewer COMMAND test_reviewer)
+
+add_executable(test_mention test_mention.cpp)
+target_link_libraries(test_mention PRIVATE modmesh-bot-lib)
+target_compile_options(test_mention PRIVATE -Wall -Wextra -Werror)
+add_test(NAME mention COMMAND test_mention)
