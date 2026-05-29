@@ -180,9 +180,13 @@ struct Review : modmesh::SerializableItem {
     User        user;
 };
 
+struct PrHead : modmesh::SerializableItem {
+    std::string sha;
+};
+
 struct PrSummary : modmesh::SerializableItem {
     int         number = 0;
-    std::string head_sha;
+    PrHead      head;        // GitHub nests sha inside `head`
     std::string updated_at;
 };
 

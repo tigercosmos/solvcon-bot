@@ -24,33 +24,30 @@ target_include_directories(modmesh-json SYSTEM PUBLIC
 )
 set_target_properties(modmesh-json PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-set(MODMESH_BOT_SOURCES
-    src/main.cpp
+# Our library — main.cpp links against this; tests link against this too.
+add_library(modmesh-bot-lib STATIC
     src/config.cpp
     src/state_store.cpp
+    src/github_types.cpp
 )
-
-add_executable(modmesh-bot ${MODMESH_BOT_SOURCES})
-
-target_compile_options(modmesh-bot PRIVATE
-    -Wall -Wextra -Werror
-)
-
-target_compile_definitions(modmesh-bot PRIVATE
+target_include_directories(modmesh-bot-lib PUBLIC src)
+target_include_directories(modmesh-bot-lib SYSTEM PUBLIC third_party/cpp-httplib)
+target_compile_options(modmesh-bot-lib PRIVATE -Wall -Wextra -Werror)
+target_compile_definitions(modmesh-bot-lib PUBLIC
     CPPHTTPLIB_OPENSSL_SUPPORT
     MODMESH_BOT_VERSION="${MODMESH_BOT_VERSION}"
 )
-
-target_include_directories(modmesh-bot PRIVATE
-    src
-)
-
-target_include_directories(modmesh-bot SYSTEM PRIVATE
-    third_party/cpp-httplib
-)
-
-target_link_libraries(modmesh-bot PRIVATE
+target_link_libraries(modmesh-bot-lib PUBLIC
     modmesh-json
     OpenSSL::SSL
     OpenSSL::Crypto
 )
+set_target_properties(modmesh-bot-lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+add_executable(modmesh-bot src/main.cpp)
+
+target_compile_options(modmesh-bot PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(modmesh-bot PRIVATE modmesh-bot-lib)
+
+enable_testing()
+add_subdirectory(tests)
