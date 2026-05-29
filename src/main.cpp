@@ -1,5 +1,8 @@
 #include "config.hpp"
+#include "github_client.hpp"
+#include "reviewer.hpp"
 #include "state_store.hpp"
+#include "watcher.hpp"
 
 #include <chrono>
 #include <csignal>
@@ -27,6 +30,10 @@ void install_signal_handlers()
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
+    // SIGPIPE is set to SIG_IGN inside subprocess.cpp the first time
+    // we spawn a child; here we also install it pre-emptively so the
+    // HTTP client doesn't kill us either.
+    signal(SIGPIPE, SIG_IGN);
 }
 
 void log_info(const std::string & msg)
@@ -49,11 +56,24 @@ int main()
         modmesh_bot::StateStore state(cfg.state_file);
         log_info("state file locked: " + cfg.state_file);
 
+        modmesh_bot::GithubClient gh(cfg);
+        modmesh_bot::Reviewer rv(cfg);
+        modmesh_bot::LiveWatcherIo io(gh, rv, state);
+        modmesh_bot::Watcher watcher(cfg, io);
+
         install_signal_handlers();
 
         while (g_stop == 0)
         {
-            log_info("tick");
+            try
+            {
+                watcher.tick();
+            }
+            catch (const std::exception & e)
+            {
+                std::cerr << "[modmesh-bot] tick error: " << e.what()
+                          << std::endl;
+            }
             // Sleep in short slices so signals interrupt within ~1s.
             for (int i = 0; i < cfg.poll_interval_sec && g_stop == 0; ++i)
             {

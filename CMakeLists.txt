@@ -33,6 +33,7 @@ add_library(modmesh-bot-lib STATIC
     src/subprocess.cpp
     src/reviewer.cpp
     src/mention.cpp
+    src/watcher.cpp
 )
 target_include_directories(modmesh-bot-lib PUBLIC src)
 target_include_directories(modmesh-bot-lib SYSTEM PUBLIC third_party/cpp-httplib)
