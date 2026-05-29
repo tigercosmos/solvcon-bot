@@ -12,3 +12,13 @@ add_executable(test_state_store test_state_store.cpp)
 target_link_libraries(test_state_store PRIVATE modmesh-bot-lib)
 target_compile_options(test_state_store PRIVATE -Wall -Wextra -Werror)
 add_test(NAME state_store COMMAND test_state_store)
+
+add_executable(test_subprocess test_subprocess.cpp)
+target_link_libraries(test_subprocess PRIVATE modmesh-bot-lib)
+target_compile_options(test_subprocess PRIVATE -Wall -Wextra -Werror)
+add_test(NAME subprocess COMMAND test_subprocess)
+
+add_executable(test_reviewer test_reviewer.cpp)
+target_link_libraries(test_reviewer PRIVATE modmesh-bot-lib)
+target_compile_options(test_reviewer PRIVATE -Wall -Wextra -Werror)
+add_test(NAME reviewer COMMAND test_reviewer)
