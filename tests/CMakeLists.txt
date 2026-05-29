@@ -32,3 +32,13 @@ add_executable(test_watcher test_watcher.cpp)
 target_link_libraries(test_watcher PRIVATE modmesh-bot-lib)
 target_compile_options(test_watcher PRIVATE -Wall -Wextra -Werror)
 add_test(NAME watcher COMMAND test_watcher)
+
+add_executable(test_config test_config.cpp)
+target_link_libraries(test_config PRIVATE modmesh-bot-lib)
+target_compile_options(test_config PRIVATE -Wall -Wextra -Werror)
+add_test(NAME config COMMAND test_config)
+
+add_executable(test_log test_log.cpp)
+target_link_libraries(test_log PRIVATE modmesh-bot-lib)
+target_compile_options(test_log PRIVATE -Wall -Wextra -Werror)
+add_test(NAME log COMMAND test_log)

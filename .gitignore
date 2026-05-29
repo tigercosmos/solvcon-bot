@@ -2,5 +2,7 @@
 /modmesh-bot.state
 /modmesh-bot.state.tmp
 /modmesh-bot.state.lock
+/scripts/e2e.env
+/tmp/
 *.o
 .DS_Store

@@ -153,21 +153,100 @@ lives entirely inside the AI CLI's own context.
 `SIGPIPE` is ignored at process startup so that a reviewer that
 closes its stdin early does not kill the daemon.
 
-## Manual smoke against a real PR (M7/M8)
+## Real-environment e2e smoke
 
-1. Create a throwaway repo under your account; the bot account must be
-   a collaborator. Set `GITHUB_REPO=<you>/<throwaway>`.
-2. Get a token (classic, `repo` + `read:org`; or fine-grained with
-   the scopes listed above).
-3. Set `REVIEWER_ARGV='["/bin/cat"]'` for a no-op reviewer that echoes
-   the diff back — this exercises the full pipeline without spending
-   AI tokens.
-4. Open a PR. Approve it from a separate user → expect the bot to
-   post a review on the next poll (auto path).
-5. From any collaborator account, leave a comment that
-   `@`-mentions the bot's handle → expect a second post (ping path).
-6. From a non-collaborator account, leave the same `@`-mention →
-   expect the bot to silently mark the comment handled and not post.
+### Identities you need
+
+The bot's design separates two identities:
+
+| Role | Who | What it does |
+|---|---|---|
+| **Bot account** | Dedicated GitHub user, distinct from your personal one | Holds `GITHUB_TOKEN`, posts review comments. Must be a collaborator on the target repo. |
+| **Mentioner / reviewer** | Your own GitHub user (or any other collaborator) | Leaves the `@<bot>` comment that triggers the ping path, or submits the `APPROVED` review that triggers the auto path. |
+
+The auto path additionally needs **a different account from the PR
+author** to submit the approving review (GitHub blocks self-approval).
+A two-account setup (`tigercosmos` + `modmesh-bot-test`) is the minimum;
+three is fully flexible.
+
+### One-time setup
+
+1. **Bot GitHub account.** Sign up a new GitHub user (e.g.
+   `modmesh-bot-test`). Add it as a **collaborator** on your fork:
+   `https://github.com/tigercosmos/modmesh/settings/access` →
+   *Add people*. Accept the invite from the bot account.
+
+2. **Bot token.** Sign in as the bot, generate a PAT:
+   - Classic: scopes `repo` (and `read:org` if the repo is in an org)
+   - Fine-grained: `pull-requests: write`, `contents: read`,
+     `metadata: read`, plus `members: read` for org repos
+
+3. **Mentioner token.** Sign in as yourself, generate a PAT with
+   `repo` (or fine-grained with `issues:write` on the target repo).
+   This is only used by the e2e script to leave the test comment.
+
+4. **Local config.** Copy and fill in:
+   ```bash
+   cp scripts/e2e.env.example scripts/e2e.env
+   $EDITOR scripts/e2e.env       # fill in tokens, BOT_HANDLE, TEST_PR_NUMBER
+   ```
+   `scripts/e2e.env` is gitignored.
+
+5. **Test PR.** Either reuse an existing open PR in `$GITHUB_REPO`
+   or open a throwaway one (a one-line README tweak on a side branch
+   is fine). Set `TEST_PR_NUMBER` in the env file to its number.
+
+### Ping path (automated)
+
+```bash
+cmake --build build
+./scripts/e2e_ping.sh
+```
+
+The script:
+
+1. Checks that the bot is a collaborator and the PR is open.
+2. As you, posts a unique `@<bot> please review` comment on the PR.
+3. Starts `./build/modmesh-bot` in the background with the bot's
+   token + `REVIEWER_ARGV=["/bin/cat"]` (echoes the diff back —
+   no AI cost).
+4. Polls the PR's comments for a reply authored by the bot whose
+   body contains the marker key
+   `source=ping pr=<n> trigger=<comment-id> -->` (with a 90s
+   timeout — override with `E2E_TIMEOUT_SEC`).
+5. Verifies the marker key + author.
+6. Cleans up: SIGTERMs the bot, deletes the test comment and the
+   bot's reply, removes the state file.
+
+Exit code 0 means the ping path is healthy end-to-end. Exit 1
+prints the last 30 lines of the bot's log so you can see what
+went wrong.
+
+### Auto path (manual)
+
+`scripts/e2e_auto.md` walks through the five-minute manual check:
+run the bot, switch to a second account in the browser, click
+**Approve** on the PR, watch the bot's log post a review within one
+poll interval. The plan exists as a doc rather than a script
+because driving GitHub's review form from CLI requires a third
+account (the bot account can't review the bot account's own posts
+loop) and gh CLI's `--approve` works fine if you set up `gh auth
+login --hostname github.com` as the reviewer account first.
+
+Quick form using `gh`:
+
+```bash
+gh auth status                  # confirm you're logged in as REVIEWER
+gh pr review "$TEST_PR_NUMBER" --approve \
+    --repo "$GITHUB_REPO" \
+    --body "automated approve for modmesh-bot e2e auto path"
+```
+
+…with the bot running in another terminal. Within one poll interval
+the bot's log should print
+`INFO watcher posted auto review for PR #<n>` and the PR should
+have a new comment from the bot containing
+`<!-- modmesh-bot/<ver> source=auto pr=<n> trigger=first-approval -->`.
 
 ## Project layout
 
@@ -189,7 +268,8 @@ modmesh-bot/
 │   ├── mention.{hpp,cpp}         @-mention matcher + case-insensitive login eq
 │   └── watcher.{hpp,cpp}         tick() running auto + ping paths against WatcherIo
 ├── tests/
-│   ├── test_config_*.cpp         (covered via main smoke today)
+│   ├── test_config.cpp           env-var matrix, range validation, REVIEWER_ARGV
+│   ├── test_log.cpp              line shape, level, control-char sanitization
 │   ├── test_state_store.cpp      flock, atomic save, cursor semantics
 │   ├── test_github_types.cpp     JSON round-trip per type
 │   ├── test_github_client.cpp    Link pagination, Retry-After, UTF-8 JSON escape, login encode
@@ -197,6 +277,10 @@ modmesh-bot/
 │   ├── test_reviewer.cpp         success, non-zero exit, timeout, empty/missing argv
 │   ├── test_mention.cpp          word-boundary matching + login eq
 │   └── test_watcher.cpp          fake-driven auto + ping control flow
+├── scripts/
+│   ├── e2e.env.example           template for the e2e env file (BOT_TOKEN, USER_TOKEN, …)
+│   ├── e2e_ping.sh               automated ping-path e2e against a real PR
+│   └── e2e_auto.md               manual checklist for the auto path
 └── third_party/
     ├── cpp-httplib/httplib.h     vendored, v0.18.5
     └── modmesh/                  submodule, pinned SHA; see issue.md for the local patch
