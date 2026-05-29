@@ -7,3 +7,8 @@ add_executable(test_github_client test_github_client.cpp)
 target_link_libraries(test_github_client PRIVATE modmesh-bot-lib)
 target_compile_options(test_github_client PRIVATE -Wall -Wextra -Werror)
 add_test(NAME github_client COMMAND test_github_client)
+
+add_executable(test_state_store test_state_store.cpp)
+target_link_libraries(test_state_store PRIVATE modmesh-bot-lib)
+target_compile_options(test_state_store PRIVATE -Wall -Wextra -Werror)
+add_test(NAME state_store COMMAND test_state_store)
