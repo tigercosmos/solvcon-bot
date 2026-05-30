@@ -286,11 +286,15 @@ e2e_list_bot_replies() {
           | .id'
 }
 
-# When E2E_KEEP_ARTIFACTS is non-empty, all of the *delete*/*dismiss*
-# helpers below short-circuit so the bot reply, the mention, and any
-# approvals stay on the PR for inspection.
+# When E2E_KEEP_ARTIFACTS is truthy (1/true/yes/on), all of the
+# *delete*/*dismiss* helpers below short-circuit so the bot reply,
+# the mention, and any approvals stay on the PR for inspection.
+# Falsy values (0/false/no/off/empty) leave cleanup enabled.
 e2e_keep_artifacts() {
-    [[ -n "${E2E_KEEP_ARTIFACTS:-}" ]]
+    case "${E2E_KEEP_ARTIFACTS:-}" in
+        1|true|TRUE|True|yes|YES|Yes|on|ON|On) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # Delete a comment authored by the bot, using BOT_PAT.

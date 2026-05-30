@@ -4,15 +4,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  # workflow_dispatch lets the e2e workflow (and a human) trigger this
+  # same build/test path manually.
+  workflow_dispatch:
 
-# Cancel an older run if a new commit is pushed to the same PR.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-and-test:
-    name: Build + ctest (${{ matrix.os }})
+    name: Build + unit (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -27,32 +29,24 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Install OpenSSL on macOS
+      - name: Install OpenSSL (macOS)
         if: matrix.os == 'macos-14'
         run: |
           brew install openssl@3
           echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
 
-      - name: Install OpenSSL on Linux
+      - name: Install OpenSSL (Linux)
         if: matrix.os == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y libssl-dev cmake build-essential
 
-      - name: Apply local modmesh parser patches
-        # The two parser fixes (empty arrays/objects + string-state) live in
-        # patches/ until upstreamed. CI applies them before configure.
-        run: ./scripts/apply_modmesh_patches.sh
-
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-
+      # Drives apply_modmesh_patches.sh, cmake configure, cmake build,
+      # then ctest. Same code path a developer hits locally with
+      # `make` + `make test`.
       - name: Build
-        run: cmake --build build --parallel
+        run: make build
 
-      - name: Run unit tests
-        # ctest exit code propagates. test_github_transport spins a local
-        # httplib::Server on 127.0.0.1; some CI sandboxes block that —
-        # we'd rather see the failure than skip silently.
-        run: ctest --test-dir build --output-on-failure
+      - name: Unit tests
+        run: make test
         timeout-minutes: 10

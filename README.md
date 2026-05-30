@@ -43,19 +43,76 @@ Configure and build:
 
 ```bash
 # macOS
-OPENSSL_ROOT_DIR=$(brew --prefix openssl@3) cmake -S . -B build
-cmake --build build
-
+OPENSSL_ROOT_DIR=$(brew --prefix openssl@3) make build
 # Linux
-cmake -S . -B build
-cmake --build build
+make build
 ```
 
 Run the tests:
 
 ```bash
-ctest --test-dir build --output-on-failure
+make test
 ```
+
+The Makefile is the one entry point for both local development and
+CI. Everything described below maps to a `make` target.
+
+## Test workflow
+
+```
+make                 # build + unit tests (no network, ~10s)
+make build           # configure + compile only
+make test            # unit tests only
+make clean           # rm -rf build/
+
+make e2e             # ALL e2e scenarios against real GitHub (reads .env)
+make e2e-ping        # one scenario: ping
+make e2e-truncated   # one scenario: MAX_DIFF_BYTES=1 -> "diff skipped" notice
+make e2e-failure     # one scenario: reviewer exits non-zero, bot must not post
+make e2e-idempotency # one scenario: marker dedupe after state wipe
+make e2e-auto        # one scenario: auto path via gh pr review --approve
+
+make all             # build + unit + every e2e
+```
+
+| Layer | What runs | Network | Cost | When to run |
+|---|---|---|---|---|
+| `make` / `make test` | 10 ctest binaries, including an in-process `httplib::Server` for transport tests | none | free | every change, every CI push |
+| `make e2e` | scripts/e2e_*.sh — posts comments + approvals on a real GitHub PR, runs the configured reviewer CLI | GitHub API + reviewer CLI | small (free with `/bin/cat`; cents with claude/codex) | before opening a PR, before a release, after touching `src/watcher.cpp` or `src/github_client.cpp` |
+
+### Pre-commit, pre-PR
+
+The Makefile assumes `.env` is filled in (copy from `.env.example`)
+before any `make e2e*` target. Useful overrides on the command line:
+
+```bash
+# Run only one scenario with a real Claude reviewer:
+REVIEWER_ARGV='["./scripts/reviewer-claude.sh"]' \
+make e2e-ping
+
+# Keep mentions, replies, and approvals on the PR for manual inspection:
+E2E_KEEP_ARTIFACTS=1 make e2e
+
+# Increase the per-scenario wait for a slow AI reviewer:
+E2E_TIMEOUT_SEC=300 SUBPROCESS_TIMEOUT_SEC=240 make e2e
+```
+
+### CI
+
+Two GitHub Actions workflows:
+
+- **`.github/workflows/ci.yml`** runs `make build && make test` on
+  every push to `main` and on every pull request, on Ubuntu and macOS.
+  Free, fast, no secrets required.
+- **`.github/workflows/e2e.yml`** is `workflow_dispatch` only — a
+  manual button in the Actions tab. It needs five repository
+  secrets (`E2E_GITHUB_REPO`, `E2E_BOT_HANDLE`, `E2E_BOT_PAT`,
+  `E2E_USER_PAT`, `E2E_PR_NUMBER`); see the workflow file's header
+  for what each is. The form lets you pick which scenarios to run
+  and whether to keep artifacts on the PR.
+
+The CI's build/test path is `make build` + `make test` — identical
+to what you ran locally. If `make` works on your machine, CI works.
 
 ## Configuration
 

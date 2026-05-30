@@ -1,0 +1,120 @@
+name: E2E (manual)
+
+# E2E runs against real GitHub: it posts a comment from one identity,
+# spawns the bot with another identity's PAT, and asserts the bot's
+# reply. Not part of the on-push CI — it's gated behind a manual
+# trigger so a reviewer can opt in (and so we don't burn AI tokens
+# on every push).
+#
+# Required repository secrets (Settings → Secrets and variables →
+# Actions):
+#
+#   E2E_GITHUB_REPO   owner/name of the test repo, e.g. tigercosmos/modmesh
+#   E2E_BOT_HANDLE    bot's GitHub username (collaborator on the test repo)
+#   E2E_BOT_PAT       bot's PAT — repo scope (or fine-grained: pull-requests:write,
+#                     contents:read, metadata:read, members:read for org repos)
+#   E2E_USER_PAT      mentioner / approver PAT, scoped to the test repo
+#                     (the runner does `gh auth login --with-token` with this)
+#   E2E_PR_NUMBER     open PR # in $E2E_GITHUB_REPO. For e2e-auto, the PR
+#                     author MUST be different from $E2E_USER_PAT's owner.
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: 'space-separated scenarios; "all" runs every one'
+        default: 'ping truncated failure idempotency'
+        required: true
+      keep_artifacts:
+        description: 'leave mention/reply/approval on the PR (1=yes)'
+        default: '1'
+        required: true
+
+# All dispatches target the SAME secret-configured PR and share the
+# same comment / approval / state-file surface. The concurrency group
+# must therefore be workflow-wide, not ref-keyed, so two manual runs
+# from different refs do not race on each other's mentions/replies.
+concurrency:
+  group: e2e
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    runs-on: macos-14
+    timeout-minutes: 40
+    env:
+      E2E_KEEP_ARTIFACTS: ${{ inputs.keep_artifacts }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install OpenSSL + jq + gh
+        run: |
+          brew install openssl@3 jq gh
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: make build
+
+      - name: Unit tests
+        run: make test
+
+      - name: Render .env from repository secrets
+        run: |
+          cat > .env <<EOF
+          GITHUB_REPO=${{ secrets.E2E_GITHUB_REPO }}
+          BOT_HANDLE=${{ secrets.E2E_BOT_HANDLE }}
+          BOT_PAT=${{ secrets.E2E_BOT_PAT }}
+          TEST_PR_NUMBER=${{ secrets.E2E_PR_NUMBER }}
+          REVIEWER_ARGV='["/bin/cat"]'
+          STATE_FILE=/tmp/modmesh-bot-e2e.state
+          EOF
+          # Mask any echoed secret value (belt-and-braces).
+          echo "::add-mask::${{ secrets.E2E_BOT_PAT }}"
+          echo "::add-mask::${{ secrets.E2E_USER_PAT }}"
+
+      - name: gh auth as mentioner
+        env:
+          GH_TOKEN_FOR_AUTH: ${{ secrets.E2E_USER_PAT }}
+        run: |
+          echo "$GH_TOKEN_FOR_AUTH" | gh auth login --with-token -h github.com
+          gh auth status -h github.com
+
+      - name: Run requested e2e scenarios
+        # `inputs.scenarios` is untrusted text from a manual dispatch;
+        # never interpolate it directly into shell. We pass it via env
+        # and whitelist each token before forwarding it to `make`.
+        env:
+          REQUESTED_SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          set -eu
+          allowed='ping truncated failure idempotency auto'
+          requested="$REQUESTED_SCENARIOS"
+          if [ "$requested" = "all" ]; then
+              requested="$allowed"
+          fi
+          for s in $requested; do
+              ok=
+              for a in $allowed; do
+                  if [ "$s" = "$a" ]; then ok=1; break; fi
+              done
+              if [ -z "$ok" ]; then
+                  echo "fatal: unknown scenario '$s'. Allowed: $allowed" >&2
+                  exit 2
+              fi
+          done
+          for s in $requested; do
+              echo "::group::e2e-$s"
+              make "e2e-$s"
+              echo "::endgroup::"
+          done
+
+      - name: Bot log (on failure)
+        if: failure()
+        run: |
+          if [ -f /tmp/modmesh-bot-e2e.log ]; then
+              echo "--- /tmp/modmesh-bot-e2e.log ---"
+              tail -200 /tmp/modmesh-bot-e2e.log || true
+          fi
