@@ -1,58 +1,61 @@
 # Auto-path e2e: manual checklist
 
 The auto path triggers when a PR receives its first `APPROVED` review.
-GitHub disallows self-approval, so this path needs a separate
-reviewer account — it's not fully automatable from a single shell.
-
-Below is a 5-minute manual checklist that exercises the path end-to-end
-against a real PR.
+GitHub disallows self-approval, so this needs a reviewer account
+that is **not** the PR author — it's not fully automatable from a
+single shell.
 
 ## Prereqs (one-time)
 
-1. Fill in `scripts/e2e.env` (copy from `scripts/e2e.env.example`).
-2. Make sure the bot account is a collaborator on `$GITHUB_REPO`.
-3. Have an open PR in `$GITHUB_REPO` you can use. Author of the PR
-   must be **different** from the bot account — otherwise the bot
-   approving its own PR is blocked by GitHub anyway, but the auto
-   path stalls on "no reviews".
-4. Have a third account (or your own second identity) that has not
-   yet approved the PR — that's the reviewer.
+1. `.env` at the repo root, filled in from `.env.example` (just the
+   bot side: `BOT_HANDLE`, `BOT_PAT`, `GITHUB_REPO`, `REVIEWER_ARGV`,
+   `STATE_FILE`). No user-side token is needed — gh handles your auth.
+2. `gh auth login --hostname github.com` once on your machine, signed
+   in as the user who will leave the approving review.
+3. The bot account (`$BOT_HANDLE`) must be a collaborator on
+   `$GITHUB_REPO`.
+4. An open PR in `$GITHUB_REPO` you can approve, whose author is
+   NOT the account currently signed in to gh.
 
 ## Run
 
-In one terminal:
+In one terminal, start the bot:
 
 ```bash
-source scripts/e2e.env
-rm -f "${STATE_FILE:-./modmesh-bot.state}".*  "${STATE_FILE:-./modmesh-bot.state}"
+set -a; source .env; set +a
+state="${STATE_FILE:-/tmp/modmesh-bot-e2e-auto.state}"
+rm -f "$state" "$state.tmp" "$state.lock"
 
-GITHUB_TOKEN="$BOT_TOKEN" \
+GITHUB_TOKEN="$BOT_PAT" \
 GITHUB_REPO="$GITHUB_REPO" \
 BOT_HANDLE="$BOT_HANDLE" \
 REVIEWER_ARGV="$REVIEWER_ARGV" \
 POLL_INTERVAL_SEC=10 \
-STATE_FILE="${STATE_FILE:-/tmp/modmesh-bot-e2e-auto.state}" \
+STATE_FILE="$state" \
 MODMESH_BOT_LOG_LEVEL=info \
 ./build/modmesh-bot 2>&1 | tee /tmp/auto-e2e.log
 ```
 
-In a second terminal (or from the web UI), as the **reviewer
-account** (not the PR author, not the bot):
+In a second terminal (you must be signed in to gh as a non-author
+collaborator):
 
-1. Open the PR.
-2. Click **Files changed** → **Review changes** → **Approve** →
-   **Submit review**.
+```bash
+set -a; source .env; set +a
+gh pr review "$TEST_PR_NUMBER" --approve \
+    --repo "$GITHUB_REPO" \
+    --body "automated approve for modmesh-bot e2e auto path"
+```
 
-You should see, within `POLL_INTERVAL_SEC` of the approval landing,
-one log line like:
+Within `POLL_INTERVAL_SEC` of the approval landing the bot's log
+should show:
 
 ```
 … INFO watcher running reviewer for PR #<n> (diff <…> bytes)
 … INFO watcher posted auto review for PR #<n>
 ```
 
-And exactly one new comment on the PR authored by `$BOT_HANDLE`, with
-a body that starts with:
+…and the PR should have exactly one new comment authored by
+`$BOT_HANDLE`, body starting with:
 
 ```
 <!-- modmesh-bot/<ver> source=auto pr=<n> trigger=first-approval -->
@@ -61,11 +64,10 @@ a body that starts with:
 ## Idempotency check
 
 Kill the bot (`Ctrl-C`), delete the state file
-(`rm "$STATE_FILE"*`), and start it again. The bot must:
+(`rm "$STATE_FILE"*`), restart it. The bot must:
 
 - list the existing PR comments,
-- find its own previous post (matched by the version-agnostic marker
-  key),
+- find its own previous post via the version-agnostic marker key,
 - log `auto: marker already present for PR #<n> — skipping dispatch`,
 - mark the PR as reviewed in the new state file,
 - NOT post a duplicate.
@@ -74,5 +76,5 @@ If a second comment appears, the marker-dedupe logic regressed.
 
 ## Cleanup
 
-Delete the bot's review comment from the PR (web UI is fine) and the
-state file.
+Delete the bot's review comment (via web UI or `gh api -X DELETE
+repos/$GITHUB_REPO/issues/comments/<id>`) and the local state file.

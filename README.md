@@ -155,46 +155,49 @@ closes its stdin early does not kill the daemon.
 
 ## Real-environment e2e smoke
 
-### Identities you need
+### Identities
 
-The bot's design separates two identities:
+Two GitHub identities are exercised:
 
-| Role | Who | What it does |
+| Role | Who | Auth used by the test |
 |---|---|---|
-| **Bot account** | Dedicated GitHub user, distinct from your personal one | Holds `GITHUB_TOKEN`, posts review comments. Must be a collaborator on the target repo. |
-| **Mentioner / reviewer** | Your own GitHub user (or any other collaborator) | Leaves the `@<bot>` comment that triggers the ping path, or submits the `APPROVED` review that triggers the auto path. |
+| **Bot account** | Dedicated GitHub user (e.g. `solvcon-bot`), distinct from yours, collaborator on the target repo. | A PAT stored in `.env` as `BOT_PAT`. The bot binary reads it as `GITHUB_TOKEN`. |
+| **You (mentioner / reviewer)** | Your own GitHub user, also a collaborator on the target repo. | `gh auth login --hostname github.com` once — no PAT needs to enter the env file. |
 
-The auto path additionally needs **a different account from the PR
-author** to submit the approving review (GitHub blocks self-approval).
-A two-account setup (`tigercosmos` + `modmesh-bot-test`) is the minimum;
-three is fully flexible.
+Auto path additionally requires a reviewer that is not the PR's
+author (GitHub blocks self-approval). That can be you or any other
+collaborator who isn't the PR author.
 
 ### One-time setup
 
-1. **Bot GitHub account.** Sign up a new GitHub user (e.g.
-   `modmesh-bot-test`). Add it as a **collaborator** on your fork:
-   `https://github.com/tigercosmos/modmesh/settings/access` →
-   *Add people*. Accept the invite from the bot account.
+1. **Bot account.** Make sure the bot user (e.g. `solvcon-bot`) is a
+   **collaborator** on `$GITHUB_REPO`. For
+   `tigercosmos/modmesh`: *Settings → Collaborators → Add people*,
+   then accept the invite while signed in as the bot.
 
-2. **Bot token.** Sign in as the bot, generate a PAT:
+2. **Bot PAT.** Sign in as the bot, generate a PAT:
    - Classic: scopes `repo` (and `read:org` if the repo is in an org)
    - Fine-grained: `pull-requests: write`, `contents: read`,
-     `metadata: read`, plus `members: read` for org repos
+     `metadata: read`, plus `members: read` for org repos.
 
-3. **Mentioner token.** Sign in as yourself, generate a PAT with
-   `repo` (or fine-grained with `issues:write` on the target repo).
-   This is only used by the e2e script to leave the test comment.
+3. **gh CLI for your side.** Once:
+   ```bash
+   brew install gh                 # macOS; or apt install gh on Debian
+   gh auth login --hostname github.com
+   ```
+   Confirm with `gh auth status` that you're signed in as your own
+   account, not the bot.
 
 4. **Local config.** Copy and fill in:
    ```bash
-   cp scripts/e2e.env.example scripts/e2e.env
-   $EDITOR scripts/e2e.env       # fill in tokens, BOT_HANDLE, TEST_PR_NUMBER
+   cp .env.example .env
+   $EDITOR .env       # set GITHUB_REPO, BOT_HANDLE, BOT_PAT, TEST_PR_NUMBER
    ```
-   `scripts/e2e.env` is gitignored.
+   `.env` is gitignored.
 
-5. **Test PR.** Either reuse an existing open PR in `$GITHUB_REPO`
-   or open a throwaway one (a one-line README tweak on a side branch
-   is fine). Set `TEST_PR_NUMBER` in the env file to its number.
+5. **Test PR.** Open or reuse an open PR in `$GITHUB_REPO`. A
+   one-line README tweak on a side branch is fine. Set
+   `TEST_PR_NUMBER` in `.env` to its number.
 
 ### Ping path (automated)
 
@@ -205,47 +208,40 @@ cmake --build build
 
 The script:
 
-1. Checks that the bot is a collaborator and the PR is open.
-2. As you, posts a unique `@<bot> please review` comment on the PR.
-3. Starts `./build/modmesh-bot` in the background with the bot's
-   token + `REVIEWER_ARGV=["/bin/cat"]` (echoes the diff back —
-   no AI cost).
-4. Polls the PR's comments for a reply authored by the bot whose
-   body contains the marker key
-   `source=ping pr=<n> trigger=<comment-id> -->` (with a 90s
-   timeout — override with `E2E_TIMEOUT_SEC`).
-5. Verifies the marker key + author.
-6. Cleans up: SIGTERMs the bot, deletes the test comment and the
-   bot's reply, removes the state file.
+1. Reads `.env`, verifies `gh` is authed as someone other than the bot.
+2. Confirms the bot is a collaborator and the PR is open.
+3. As you (via `gh api`), posts a uniquely-nonced
+   `@<bot> please review` comment on the PR.
+4. Starts `./build/modmesh-bot` in the background with `BOT_PAT` as
+   `GITHUB_TOKEN`.
+5. Polls the PR's comments (via `gh api`) for a reply authored by
+   the bot whose body contains the marker key
+   `source=ping pr=<n> trigger=<comment-id> -->` (90s timeout —
+   override with `E2E_TIMEOUT_SEC`).
+6. Verifies the marker key + author.
+7. Cleans up via the EXIT trap: SIGTERMs the bot, deletes the test
+   comment and the bot's reply, removes the state file.
 
-Exit code 0 means the ping path is healthy end-to-end. Exit 1
+Exit code 0 means the ping path is healthy end-to-end. Non-zero
 prints the last 30 lines of the bot's log so you can see what
 went wrong.
 
 ### Auto path (manual)
 
 `scripts/e2e_auto.md` walks through the five-minute manual check:
-run the bot, switch to a second account in the browser, click
-**Approve** on the PR, watch the bot's log post a review within one
-poll interval. The plan exists as a doc rather than a script
-because driving GitHub's review form from CLI requires a third
-account (the bot account can't review the bot account's own posts
-loop) and gh CLI's `--approve` works fine if you set up `gh auth
-login --hostname github.com` as the reviewer account first.
-
-Quick form using `gh`:
+start the bot in one terminal, run
 
 ```bash
-gh auth status                  # confirm you're logged in as REVIEWER
+set -a; source .env; set +a       # load TEST_PR_NUMBER + GITHUB_REPO
 gh pr review "$TEST_PR_NUMBER" --approve \
     --repo "$GITHUB_REPO" \
     --body "automated approve for modmesh-bot e2e auto path"
 ```
 
-…with the bot running in another terminal. Within one poll interval
-the bot's log should print
-`INFO watcher posted auto review for PR #<n>` and the PR should
-have a new comment from the bot containing
+in another (you must be signed in to gh as a non-author collaborator),
+and within one poll interval the bot's log should print
+`INFO watcher posted auto review for PR #<n>`. The PR should have a
+new comment from the bot containing
 `<!-- modmesh-bot/<ver> source=auto pr=<n> trigger=first-approval -->`.
 
 ## Project layout
@@ -277,9 +273,9 @@ modmesh-bot/
 │   ├── test_reviewer.cpp         success, non-zero exit, timeout, empty/missing argv
 │   ├── test_mention.cpp          word-boundary matching + login eq
 │   └── test_watcher.cpp          fake-driven auto + ping control flow
+├── .env.example                  template for the .env at repo root (BOT_PAT, GITHUB_REPO, TEST_PR_NUMBER, …)
 ├── scripts/
-│   ├── e2e.env.example           template for the e2e env file (BOT_TOKEN, USER_TOKEN, …)
-│   ├── e2e_ping.sh               automated ping-path e2e against a real PR
+│   ├── e2e_ping.sh               automated ping-path e2e (uses gh CLI for user-side calls)
 │   └── e2e_auto.md               manual checklist for the auto path
 └── third_party/
     ├── cpp-httplib/httplib.h     vendored, v0.18.5

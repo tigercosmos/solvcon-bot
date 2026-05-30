@@ -2,6 +2,7 @@
 /modmesh-bot.state
 /modmesh-bot.state.tmp
 /modmesh-bot.state.lock
+/.env
 /scripts/e2e.env
 /tmp/
 *.o
