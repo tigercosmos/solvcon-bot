@@ -26,6 +26,14 @@ struct Config
     int http_read_timeout_sec = 30;
     int http_write_timeout_sec = 30;
 
+    // Additional env var NAMES to pass through from the bot's
+    // environment to the reviewer subprocess. PATH, HOME, LANG, TERM,
+    // USER, LOGNAME are always passed; this list adds credentials like
+    // ANTHROPIC_API_KEY, OPENAI_API_KEY, or anything else the AI CLI
+    // needs. Read from REVIEWER_ENV_PASSTHROUGH as a comma-separated
+    // list. Defaults to empty.
+    std::vector<std::string> reviewer_env_passthrough;
+
     static Config from_env();
 };
 

@@ -72,6 +72,7 @@ Optional:
 | `HTTP_CONNECT_TIMEOUT_SEC` | `10` | cpp-httplib `set_connection_timeout`. |
 | `HTTP_READ_TIMEOUT_SEC` | `30` | cpp-httplib `set_read_timeout`. |
 | `HTTP_WRITE_TIMEOUT_SEC` | `30` | cpp-httplib `set_write_timeout`. |
+| `REVIEWER_ENV_PASSTHROUGH` | empty | Comma-separated list of env-var names to pass through to the reviewer subprocess on top of the defaults (`PATH`/`HOME`/`LANG`/`TERM`/`USER`/`LOGNAME`). Use for AI credentials such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Not needed when the CLI authenticates via files in `$HOME` (codex's `~/.codex`, or claude after `claude /login` writes to the macOS keychain — keychain access already works with the default `USER` passthrough). |
 | `MODMESH_BOT_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. |
 
 ## Run

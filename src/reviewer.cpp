@@ -23,7 +23,8 @@ std::string Reviewer::run(const std::string & diff) const
             cfg_.reviewer_argv,
             diff,
             cfg_.max_output_bytes,
-            cfg_.subprocess_timeout_sec);
+            cfg_.subprocess_timeout_sec,
+            cfg_.reviewer_env_passthrough);
     }
     catch (const std::exception & e)
     {

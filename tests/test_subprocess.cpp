@@ -146,6 +146,47 @@ void test_sanitized_env_keeps_path()
     EXPECT(r.stdout_buf.find(needle) != std::string::npos);
 }
 
+void test_default_env_passes_user_and_logname()
+{
+    // claude on macOS needs USER for keychain access; gh on Linux too.
+    ::setenv("USER", "test-user", 1);
+    ::setenv("LOGNAME", "test-user", 1);
+    RunResult r = run_subprocess({"/usr/bin/env"}, "", 65536, 5);
+    EXPECT_EQ(r.exit_status, 0);
+    EXPECT(r.stdout_buf.find("USER=test-user") != std::string::npos);
+    EXPECT(r.stdout_buf.find("LOGNAME=test-user") != std::string::npos);
+}
+
+void test_extra_env_allowlist_passes_through()
+{
+    // Set a credential-shaped var in parent; default allowlist drops it.
+    ::setenv("MODMESH_BOT_TEST_API_KEY", "sk-test-secret", 1);
+
+    RunResult r_default = run_subprocess({"/usr/bin/env"}, "", 65536, 5);
+    EXPECT_EQ(r_default.exit_status, 0);
+    EXPECT(r_default.stdout_buf.find("MODMESH_BOT_TEST_API_KEY") == std::string::npos);
+
+    RunResult r_extra = run_subprocess(
+        {"/usr/bin/env"}, "", 65536, 5,
+        {"MODMESH_BOT_TEST_API_KEY"});
+    EXPECT_EQ(r_extra.exit_status, 0);
+    EXPECT(r_extra.stdout_buf.find("MODMESH_BOT_TEST_API_KEY=sk-test-secret") != std::string::npos);
+
+    ::unsetenv("MODMESH_BOT_TEST_API_KEY");
+}
+
+void test_extra_env_allowlist_drops_unset_vars()
+{
+    // Var is in the allowlist but not in the parent env — child should
+    // not see a NAME= entry.
+    ::unsetenv("MODMESH_BOT_TEST_NOT_SET");
+    RunResult r = run_subprocess(
+        {"/usr/bin/env"}, "", 65536, 5,
+        {"MODMESH_BOT_TEST_NOT_SET"});
+    EXPECT_EQ(r.exit_status, 0);
+    EXPECT(r.stdout_buf.find("MODMESH_BOT_TEST_NOT_SET") == std::string::npos);
+}
+
 void test_large_stdin_round_trip()
 {
     // 200 KB through cat. Stresses POLLOUT/POLLIN interleave.
@@ -175,6 +216,9 @@ int main()
     test_stderr_captured_separately();
     test_sanitized_env_no_github_token();
     test_sanitized_env_keeps_path();
+    test_default_env_passes_user_and_logname();
+    test_extra_env_allowlist_passes_through();
+    test_extra_env_allowlist_drops_unset_vars();
     test_large_stdin_round_trip();
 
     std::cerr << "subprocess tests: " << g_passed << " passed, "

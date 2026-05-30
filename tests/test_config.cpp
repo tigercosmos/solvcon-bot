@@ -54,6 +54,7 @@ const char * const k_all_vars[] = {
     "POLL_INTERVAL_SEC", "STATE_FILE",
     "MAX_DIFF_BYTES", "MAX_OUTPUT_BYTES", "SUBPROCESS_TIMEOUT_SEC",
     "HTTP_CONNECT_TIMEOUT_SEC", "HTTP_READ_TIMEOUT_SEC", "HTTP_WRITE_TIMEOUT_SEC",
+    "REVIEWER_ENV_PASSTHROUGH",
 };
 
 void clear_env()
@@ -306,6 +307,54 @@ void test_max_diff_bytes_zero_rejected()
                                   "MAX_DIFF_BYTES"));
 }
 
+// --- REVIEWER_ENV_PASSTHROUGH parsing ----------------------------------
+
+void test_reviewer_env_passthrough_default_empty()
+{
+    clear_env();
+    set_required_defaults();
+    Config c = Config::from_env();
+    EXPECT(c.reviewer_env_passthrough.empty());
+}
+
+void test_reviewer_env_passthrough_csv()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_ENV_PASSTHROUGH",
+             "ANTHROPIC_API_KEY,OPENAI_API_KEY,SOME_OTHER", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.reviewer_env_passthrough.size(),
+              static_cast<std::size_t>(3));
+    EXPECT_EQ(c.reviewer_env_passthrough[0], std::string("ANTHROPIC_API_KEY"));
+    EXPECT_EQ(c.reviewer_env_passthrough[1], std::string("OPENAI_API_KEY"));
+    EXPECT_EQ(c.reviewer_env_passthrough[2], std::string("SOME_OTHER"));
+}
+
+void test_reviewer_env_passthrough_trims_whitespace()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_ENV_PASSTHROUGH",
+             "  ANTHROPIC_API_KEY  ,  OPENAI_API_KEY  ", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.reviewer_env_passthrough.size(),
+              static_cast<std::size_t>(2));
+    EXPECT_EQ(c.reviewer_env_passthrough[0], std::string("ANTHROPIC_API_KEY"));
+    EXPECT_EQ(c.reviewer_env_passthrough[1], std::string("OPENAI_API_KEY"));
+}
+
+void test_reviewer_env_passthrough_drops_empty_tokens()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_ENV_PASSTHROUGH", ",,FOO,,", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.reviewer_env_passthrough.size(),
+              static_cast<std::size_t>(1));
+    EXPECT_EQ(c.reviewer_env_passthrough[0], std::string("FOO"));
+}
+
 void test_poll_interval_too_large_rejected()
 {
     clear_env();
@@ -345,6 +394,11 @@ int main()
     test_max_diff_bytes_negative_rejected();
     test_max_diff_bytes_zero_rejected();
     test_poll_interval_too_large_rejected();
+
+    test_reviewer_env_passthrough_default_empty();
+    test_reviewer_env_passthrough_csv();
+    test_reviewer_env_passthrough_trims_whitespace();
+    test_reviewer_env_passthrough_drops_empty_tokens();
 
     clear_env();
     std::cerr << "config tests: " << g_passed << " passed, "

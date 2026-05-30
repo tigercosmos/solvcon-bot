@@ -2,12 +2,14 @@
 
 #include <modmesh/serialization/SerializableItem.hpp>
 
+#include <cctype>
 #include <charconv>
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace modmesh_bot
 {
@@ -104,6 +106,27 @@ std::vector<std::string> parse_argv_json(const std::string & json)
     return argv;
 }
 
+// Split a comma-separated, optionally-whitespace-padded list of names
+// into a vector. Empty tokens are dropped.
+std::vector<std::string> parse_csv_names(const std::string & raw)
+{
+    std::vector<std::string> out;
+    std::size_t pos = 0;
+    while (pos <= raw.size())
+    {
+        const std::size_t comma = raw.find(',', pos);
+        const std::size_t end = (comma == std::string::npos) ? raw.size() : comma;
+        std::size_t s = pos;
+        std::size_t e = end;
+        while (s < e && std::isspace(static_cast<unsigned char>(raw[s]))) ++s;
+        while (e > s && std::isspace(static_cast<unsigned char>(raw[e - 1]))) --e;
+        if (e > s) out.emplace_back(raw.substr(s, e - s));
+        if (comma == std::string::npos) break;
+        pos = comma + 1;
+    }
+    return out;
+}
+
 std::pair<std::string, std::string> split_owner_repo(const std::string & repo)
 {
     auto slash = repo.find('/');
@@ -141,6 +164,12 @@ Config Config::from_env()
     cfg.http_connect_timeout_sec = env_int_or("HTTP_CONNECT_TIMEOUT_SEC", cfg.http_connect_timeout_sec, 1, kIntMax);
     cfg.http_read_timeout_sec = env_int_or("HTTP_READ_TIMEOUT_SEC", cfg.http_read_timeout_sec, 1, kIntMax);
     cfg.http_write_timeout_sec = env_int_or("HTTP_WRITE_TIMEOUT_SEC", cfg.http_write_timeout_sec, 1, kIntMax);
+
+    if (const char * v = std::getenv("REVIEWER_ENV_PASSTHROUGH");
+        v != nullptr && *v != '\0')
+    {
+        cfg.reviewer_env_passthrough = parse_csv_names(v);
+    }
 
     return cfg;
 }

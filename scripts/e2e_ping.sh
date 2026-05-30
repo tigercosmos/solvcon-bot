@@ -33,8 +33,28 @@ if [[ ! -f "$ENV_FILE" ]]; then
     echo "  copy .env.example to .env and fill in." >&2
     exit 2
 fi
+
+# Pre-existing env vars (passed in on the command line) take priority
+# over the values in .env, so a caller can do e.g.
+#   REVIEWER_ARGV='["claude","-p"]' ./scripts/e2e_ping.sh
+# without editing the file. We save the pre-source values for a small
+# allow-list and restore them after sourcing.
+__pre_REVIEWER_ARGV="${REVIEWER_ARGV:-}"
+__pre_E2E_TIMEOUT_SEC="${E2E_TIMEOUT_SEC:-}"
+__pre_POLL_INTERVAL_SEC="${POLL_INTERVAL_SEC:-}"
+__pre_SUBPROCESS_TIMEOUT_SEC="${SUBPROCESS_TIMEOUT_SEC:-}"
+__pre_MAX_DIFF_BYTES="${MAX_DIFF_BYTES:-}"
+__pre_TEST_PR_NUMBER="${TEST_PR_NUMBER:-}"
+
 # shellcheck disable=SC1090
 set -a; source "$ENV_FILE"; set +a
+
+[[ -n "$__pre_REVIEWER_ARGV" ]] && REVIEWER_ARGV="$__pre_REVIEWER_ARGV"
+[[ -n "$__pre_E2E_TIMEOUT_SEC" ]] && E2E_TIMEOUT_SEC="$__pre_E2E_TIMEOUT_SEC"
+[[ -n "$__pre_POLL_INTERVAL_SEC" ]] && POLL_INTERVAL_SEC="$__pre_POLL_INTERVAL_SEC"
+[[ -n "$__pre_SUBPROCESS_TIMEOUT_SEC" ]] && SUBPROCESS_TIMEOUT_SEC="$__pre_SUBPROCESS_TIMEOUT_SEC"
+[[ -n "$__pre_MAX_DIFF_BYTES" ]] && MAX_DIFF_BYTES="$__pre_MAX_DIFF_BYTES"
+[[ -n "$__pre_TEST_PR_NUMBER" ]] && TEST_PR_NUMBER="$__pre_TEST_PR_NUMBER"
 
 # --- sanity ---------------------------------------------------------------
 
@@ -161,11 +181,14 @@ BOT_LOG=/tmp/modmesh-bot-e2e.log
 rm -f "$BOT_LOG"
 
 echo "==> starting modmesh-bot ($BIN)"
+echo "    REVIEWER_ARGV: $REVIEWER_ARGV"
 GITHUB_TOKEN="$BOT_PAT" \
 GITHUB_REPO="$GITHUB_REPO" \
 BOT_HANDLE="$BOT_HANDLE" \
 REVIEWER_ARGV="$REVIEWER_ARGV" \
-POLL_INTERVAL_SEC=5 \
+POLL_INTERVAL_SEC="${POLL_INTERVAL_SEC:-5}" \
+SUBPROCESS_TIMEOUT_SEC="${SUBPROCESS_TIMEOUT_SEC:-300}" \
+MAX_DIFF_BYTES="${MAX_DIFF_BYTES:-200000}" \
 STATE_FILE="$STATE_FILE" \
 MODMESH_BOT_LOG_LEVEL=info \
 "$BIN" >"$BOT_LOG" 2>&1 &

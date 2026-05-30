@@ -111,15 +111,28 @@ struct ChildEnv
     std::vector<char *> ptrs;
 };
 
-ChildEnv build_sanitized_env()
+ChildEnv build_sanitized_env(const std::vector<std::string> & extra_allowlist)
 {
     ChildEnv e;
-    const char * keep[] = {"PATH", "HOME", "LANG", "TERM"};
+    // Default allowlist: process basics that every CLI expects + the
+    // user-identity vars that macOS keychain APIs need (claude on
+    // macOS, gh on Linux, etc.). Nothing here is a credential.
+    const char * keep[] = {
+        "PATH", "HOME", "LANG", "TERM", "USER", "LOGNAME"
+    };
     for (const char * key : keep)
     {
         if (const char * v = std::getenv(key); v != nullptr)
         {
             e.strings.emplace_back(std::string(key) + "=" + v);
+        }
+    }
+    for (const std::string & key : extra_allowlist)
+    {
+        if (key.empty()) continue;
+        if (const char * v = std::getenv(key.c_str()); v != nullptr)
+        {
+            e.strings.emplace_back(key + "=" + v);
         }
     }
     e.ptrs.reserve(e.strings.size() + 1);
@@ -157,7 +170,8 @@ RunResult run_subprocess(
     const std::vector<std::string> & argv,
     const std::string & stdin_input,
     std::size_t max_output_bytes,
-    int timeout_seconds)
+    int timeout_seconds,
+    const std::vector<std::string> & extra_env_allowlist)
 {
     if (argv.empty())
     {
@@ -173,7 +187,7 @@ RunResult run_subprocess(
     // fork(). Doing it in the child would call non-async-signal-safe
     // routines (getenv, malloc, std::string ctors) between fork() and
     // execvp(), which is unsafe if the bot ever becomes multithreaded.
-    ChildEnv env = build_sanitized_env();
+    ChildEnv env = build_sanitized_env(extra_env_allowlist);
     std::vector<std::string> owned_argv = argv; // own the strings for execvp
     std::vector<char *> argv_ptrs = build_argv_pointers(owned_argv);
 

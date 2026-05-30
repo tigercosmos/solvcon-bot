@@ -228,6 +228,7 @@ Outgoing JSON (e.g. `{"body": "..."}`) emitted via
 | `HTTP_CONNECT_TIMEOUT_SEC` | no | `10` | cpp-httplib `set_connection_timeout` |
 | `HTTP_READ_TIMEOUT_SEC` | no | `30` | cpp-httplib `set_read_timeout` |
 | `HTTP_WRITE_TIMEOUT_SEC` | no | `30` | cpp-httplib `set_write_timeout` |
+| `REVIEWER_ENV_PASSTHROUGH` | no | empty | Comma-separated list of env-var names to pass through from the bot to the reviewer subprocess on top of the defaults (`PATH`/`HOME`/`LANG`/`TERM`/`USER`/`LOGNAME`). Typically `ANTHROPIC_API_KEY` and/or `OPENAI_API_KEY`. |
 
 `REVIEWER_ARGV` is a JSON array specifically because shell parsing of a
 single string would either drop legitimate quoted args or open an injection
@@ -326,7 +327,7 @@ case-insensitive, `[A-Za-z0-9-]` charset, max 39 chars). Login comparisons
 ## 10. Subprocess details
 
 - `pipe2(O_NONBLOCK | O_CLOEXEC)` for stdin/stdout/stderr.
-- `fork()` + `setpgid(0,0)` in the child, then `execve` (not `execvp`) with a sanitized environment containing **only**: `PATH`, `HOME`, `LANG`, `TERM`. **`GITHUB_TOKEN` is explicitly not passed.**
+- `fork()` + `setpgid(0,0)` in the child, then `execve` (not `execvp`) with a sanitized environment containing only: `PATH`, `HOME`, `LANG`, `TERM`, `USER`, `LOGNAME` plus whatever names the operator lists in `REVIEWER_ENV_PASSTHROUGH` (typically `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` so the AI CLI can authenticate). **`GITHUB_TOKEN` is explicitly not passed unless the operator names it.** `USER`/`LOGNAME` are in defaults because macOS keychain APIs (used by `claude`) require them.
 - Parent runs a single `poll(2)` loop: writes diff to child stdin (handles `EAGAIN`), drains stdout/stderr into capped buffers (`MAX_OUTPUT_BYTES` each — further bytes discarded with a "[truncated]" footer).
 - Hard timeout (`SUBPROCESS_TIMEOUT_SEC`). On timeout: `killpg(pgid, SIGTERM)`, wait briefly, then `killpg(pgid, SIGKILL)`.
 - Exit status non-zero ⇒ log stderr buffer, do **not** post a comment, do **not** mark state.
