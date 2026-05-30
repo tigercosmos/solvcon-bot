@@ -13,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 namespace modmesh_bot
 {
@@ -158,6 +159,27 @@ struct GithubClient::Impl
     httplib::Client cli;
     httplib::Headers default_headers;
     std::string repo_path; // "/repos/{owner}/{repo}"
+
+    // Conditional-request cache for endpoints we opt in to. Keyed by
+    // the canonical first-page URL (path+query). On each call we send
+    // `If-None-Match: <etag>`; a 304 returns the cached page bodies
+    // (re-parsed into the requested item type) without another fetch.
+    //
+    // Storing the raw page bodies — not the parsed items — lets a
+    // single cache slot work across different T template
+    // instantiations and avoids std::any acrobatics. The parser is
+    // cheap relative to a real network round-trip.
+    //
+    // The cache is bounded by (1 entry for /pulls) + (1 entry per
+    // ever-seen PR for /reviews). That's ~10 KB/entry × hundreds of
+    // PRs in the worst case; deemed acceptable for a single-instance
+    // long-running bot. No eviction in v1.
+    struct CacheEntry
+    {
+        std::string etag;
+        std::vector<std::string> page_bodies; // one body per page, in order
+    };
+    std::unordered_map<std::string, CacheEntry> conditional_cache;
 
     explicit Impl(const Config & c)
         : cfg(c), cli(c.github_api_base_url.c_str())
@@ -359,6 +381,123 @@ struct GithubClient::Impl
         mm_detail::JsonHelper::from_json_string(node, out);
         return out;
     }
+
+    // Same as walk_pages<T> but uses an ETag-conditional first-page
+    // GET so a quiet endpoint costs one round-trip that returns 304.
+    //
+    // Mechanics:
+    //  - On a cache hit, send If-None-Match: <stored etag>.
+    //  - 304 -> re-parse the cached page bodies; no further requests.
+    //  - 200 -> paginate fresh from this response, replace the cache.
+    //  - 2xx other than 200 (rare for list endpoints) -> treat as 200.
+    //  - non-2xx, non-304 -> throw GithubError, same as walk_pages.
+    //
+    // Only the first page is conditioned. Subsequent pages are fetched
+    // unconditionally — otherwise a mid-walk 304 could yield a mixed
+    // snapshot if the underlying collection changed mid-pagination.
+    template <typename T>
+    std::vector<T> walk_pages_conditional(std::string path)
+    {
+        const std::string key = path; // cache key = canonical first-page URL
+        httplib::Headers extra;
+        bool sent_if_none_match = false;
+        if (auto it = conditional_cache.find(key);
+            it != conditional_cache.end() && !it->second.etag.empty())
+        {
+            extra.emplace("If-None-Match", it->second.etag);
+            sent_if_none_match = true;
+        }
+
+        auto res = request("GET", path, extra, "");
+        if (!res)
+        {
+            throw GithubError(0,
+                "list endpoint network error: " + path);
+        }
+
+        if (sent_if_none_match && res->status == 304)
+        {
+            // Cache hit. Re-parse stored page bodies into T.
+            const auto & entry = conditional_cache[key];
+            std::vector<T> out;
+            for (const auto & body : entry.page_bodies)
+            {
+                auto page = parse_array<T>(body);
+                out.reserve(out.size() + page.size());
+                for (auto & item : page) out.emplace_back(std::move(item));
+            }
+            return out;
+        }
+
+        if (res->status < 200 || res->status >= 300)
+        {
+            throw GithubError(res->status,
+                "list endpoint failed: " + path + " HTTP "
+                    + std::to_string(res->status));
+        }
+
+        // 200 (or 2xx). Paginate fresh. We will only cache if the
+        // ENTIRE response fit on a single page — see comment at the
+        // cache-store step below.
+        const std::string first_etag = header(res, "ETag");
+        const std::string first_body = res->body;
+
+        std::vector<T> out = parse_array<T>(first_body);
+        std::string next_path;
+        if (auto link = github_detail::parse_link_next(header(res, "Link"));
+            link.has_value())
+        {
+            next_path = strip_origin(*link);
+        }
+        const bool multi_page = !next_path.empty();
+        while (!next_path.empty())
+        {
+            // Subsequent pages: unconditional. Cross-page consistency
+            // matters when the collection is sorted.
+            auto page_res = request("GET", next_path, {}, "");
+            if (!page_res || page_res->status < 200 || page_res->status >= 300)
+            {
+                throw GithubError(
+                    page_res ? page_res->status : 0,
+                    "list endpoint failed (page " + next_path + ")");
+            }
+            auto page = parse_array<T>(page_res->body);
+            out.reserve(out.size() + page.size());
+            for (auto & item : page) out.emplace_back(std::move(item));
+            next_path.clear();
+            if (auto link = github_detail::parse_link_next(header(page_res, "Link"));
+                link.has_value())
+            {
+                next_path = strip_origin(*link);
+            }
+        }
+
+        // Cache decision. We cache ONLY when the response fit on a
+        // single page. Reason: GitHub's pagination ETags validate one
+        // page, not the whole collection. For endpoints that append
+        // new items to the LAST page (like /pulls/{n}/reviews, which
+        // is sorted by submission order), a new review on page 2
+        // doesn't change page 1's ETag — caching a multi-page snapshot
+        // would silently miss that new review forever.
+        //
+        // For single-page responses there is no "page 2 stale" — the
+        // first-page ETag fully validates the collection.
+        if (!first_etag.empty() && !multi_page)
+        {
+            CacheEntry fresh;
+            fresh.etag = first_etag;
+            fresh.page_bodies.push_back(first_body);
+            conditional_cache[key] = std::move(fresh);
+        }
+        else
+        {
+            // Multi-page response or no ETag: drop any prior cache to
+            // avoid a stale single-page snapshot lingering after the
+            // collection grew past one page.
+            conditional_cache.erase(key);
+        }
+        return out;
+    }
 };
 
 GithubClient::GithubClient(const Config & cfg)
@@ -368,13 +507,19 @@ GithubClient::~GithubClient() = default;
 
 std::vector<PrSummary> GithubClient::list_open_prs()
 {
-    return impl_->walk_pages<PrSummary>(
-        impl_->repo_path + "/pulls?state=open&per_page=100");
+    // sort=updated&direction=desc is a GitHub-documented hint that
+    // helps the bot's marker dedupe land on the freshest activity
+    // first when the list is fully refreshed. The conditional cache
+    // keys on the full path, so changing the URL invalidates any
+    // previously cached entry — desired on first deployment.
+    return impl_->walk_pages_conditional<PrSummary>(
+        impl_->repo_path
+        + "/pulls?state=open&sort=updated&direction=desc&per_page=100");
 }
 
 std::vector<Review> GithubClient::list_reviews(int pr_number)
 {
-    return impl_->walk_pages<Review>(
+    return impl_->walk_pages_conditional<Review>(
         impl_->repo_path + "/pulls/" + std::to_string(pr_number)
         + "/reviews?per_page=100");
 }

@@ -449,6 +449,354 @@ void test_stream_diff_sends_diff_accept_header()
     EXPECT_EQ(captured_accept, std::string("application/vnd.github.diff"));
 }
 
+// --- conditional caching (If-None-Match / ETag) -------------------------
+
+void test_conditional_etag_round_trip_304()
+{
+    // First call: 200 + ETag stored. Second call: send If-None-Match,
+    // server returns 304, client returns the previously parsed items
+    // without another network fetch into the body.
+    TestServer ts;
+    std::atomic<int> calls{0};
+    std::string first_inm; // captured If-None-Match on second call
+    std::string second_inm;
+    ts.svr().Get("/repos/o/r/pulls",
+        [&](const httplib::Request & req, httplib::Response & res) {
+            const int n = ++calls;
+            if (n == 1)
+            {
+                first_inm = req.get_header_value("If-None-Match");
+                res.set_header("ETag", "\"pulls-v1\"");
+                res.status = 200;
+                res.set_content(
+                    R"([{"number":7,"head":{"sha":"abc"},"updated_at":"2026-05-01T10:00:00Z"}])",
+                    "application/json");
+            }
+            else
+            {
+                second_inm = req.get_header_value("If-None-Match");
+                res.status = 304;
+                // 304 carries no body.
+            }
+        });
+
+    GithubClient gh(make_cfg(ts));
+    auto first = gh.list_open_prs();
+    EXPECT_EQ(first.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(first[0].number, 7);
+    EXPECT(first_inm.empty()); // nothing to send on the first call
+
+    auto second = gh.list_open_prs();
+    // Same items from the cache.
+    EXPECT_EQ(second.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(second[0].number, 7);
+    EXPECT_EQ(second[0].head.sha, std::string("abc"));
+    EXPECT_EQ(second_inm, std::string("\"pulls-v1\""));
+    EXPECT_EQ(calls.load(), 2); // both calls hit server (one returned 304)
+}
+
+void test_conditional_200_invalidates_cache_with_new_body()
+{
+    // First call 200 with body1+etag1; second call returns 200 with
+    // body2+etag2; third call sends If-None-Match: etag2 and gets 304.
+    TestServer ts;
+    std::atomic<int> calls{0};
+    ts.svr().Get("/repos/o/r/pulls",
+        [&](const httplib::Request & req, httplib::Response & res) {
+            const int n = ++calls;
+            if (n == 1)
+            {
+                res.set_header("ETag", "\"v1\"");
+                res.status = 200;
+                res.set_content(
+                    R"([{"number":1,"head":{"sha":"a"},"updated_at":"2026-05-01T10:00:00Z"}])",
+                    "application/json");
+            }
+            else if (n == 2)
+            {
+                // Bot sends If-None-Match: "v1" but the resource changed.
+                EXPECT_EQ(req.get_header_value("If-None-Match"),
+                          std::string("\"v1\""));
+                res.set_header("ETag", "\"v2\"");
+                res.status = 200;
+                res.set_content(
+                    R"([{"number":1,"head":{"sha":"a"},"updated_at":"2026-05-01T10:00:00Z"},
+                        {"number":2,"head":{"sha":"b"},"updated_at":"2026-05-01T11:00:00Z"}])",
+                    "application/json");
+            }
+            else
+            {
+                EXPECT_EQ(req.get_header_value("If-None-Match"),
+                          std::string("\"v2\""));
+                res.status = 304;
+            }
+        });
+
+    GithubClient gh(make_cfg(ts));
+    auto r1 = gh.list_open_prs();
+    EXPECT_EQ(r1.size(), static_cast<std::size_t>(1));
+    auto r2 = gh.list_open_prs();
+    EXPECT_EQ(r2.size(), static_cast<std::size_t>(2));
+    auto r3 = gh.list_open_prs();
+    EXPECT_EQ(r3.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(r3[1].number, 2);
+    EXPECT_EQ(calls.load(), 3);
+}
+
+void test_conditional_no_etag_response_does_not_cache()
+{
+    // Server returns 200 but no ETag header. We must NOT send
+    // If-None-Match on the next call (we have no etag), and we
+    // re-fetch fresh data.
+    TestServer ts;
+    std::atomic<int> calls{0};
+    std::atomic<int> with_inm{0};
+    ts.svr().Get("/repos/o/r/pulls",
+        [&](const httplib::Request & req, httplib::Response & res) {
+            ++calls;
+            if (!req.get_header_value("If-None-Match").empty()) ++with_inm;
+            res.status = 200;
+            res.set_content(
+                R"([{"number":1,"head":{"sha":"a"},"updated_at":"2026-05-01T10:00:00Z"}])",
+                "application/json");
+        });
+    GithubClient gh(make_cfg(ts));
+    (void)gh.list_open_prs();
+    (void)gh.list_open_prs();
+    EXPECT_EQ(calls.load(), 2);
+    EXPECT_EQ(with_inm.load(), 0);
+}
+
+void test_conditional_per_pr_reviews_cache_separately()
+{
+    // /pulls/1/reviews and /pulls/2/reviews must use independent cache
+    // entries — a 304 on PR 1 must not return PR 2's items, and vice
+    // versa. We hit each PR twice; the second call should send
+    // If-None-Match scoped to that PR's etag and receive 304, then
+    // return PR-specific cached items.
+    TestServer ts;
+    std::atomic<int> pr1_calls{0};
+    std::atomic<int> pr2_calls{0};
+    std::string pr1_inm_second;
+    std::string pr2_inm_second;
+    ts.svr().Get(R"(/repos/o/r/pulls/(\d+)/reviews)",
+        [&](const httplib::Request & req, httplib::Response & res) {
+            const std::string n = req.matches[1];
+            const std::string inm = req.get_header_value("If-None-Match");
+            if (n == "1")
+            {
+                ++pr1_calls;
+                if (!inm.empty())
+                {
+                    pr1_inm_second = inm;
+                    res.status = 304;
+                    return;
+                }
+                res.set_header("ETag", "\"reviews-1\"");
+                res.status = 200;
+                res.set_content(
+                    R"([{"id":11,"state":"APPROVED","submitted_at":"2026-05-01T10:00:00Z","user":{"login":"a"}}])",
+                    "application/json");
+            }
+            else
+            {
+                ++pr2_calls;
+                if (!inm.empty())
+                {
+                    pr2_inm_second = inm;
+                    res.status = 304;
+                    return;
+                }
+                res.set_header("ETag", "\"reviews-2\"");
+                res.status = 200;
+                res.set_content(
+                    R"([{"id":22,"state":"COMMENTED","submitted_at":"2026-05-01T10:00:00Z","user":{"login":"b"}}])",
+                    "application/json");
+            }
+        });
+    GithubClient gh(make_cfg(ts));
+    auto r1a = gh.list_reviews(1);
+    auto r2a = gh.list_reviews(2);
+    EXPECT_EQ(r1a.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(r1a[0].id, static_cast<std::int64_t>(11));
+    EXPECT_EQ(r2a.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(r2a[0].id, static_cast<std::int64_t>(22));
+
+    auto r1b = gh.list_reviews(1);
+    auto r2b = gh.list_reviews(2);
+    EXPECT_EQ(r1b.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(r1b[0].id, static_cast<std::int64_t>(11));
+    EXPECT_EQ(r2b.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(r2b[0].id, static_cast<std::int64_t>(22));
+
+    EXPECT_EQ(pr1_inm_second, std::string("\"reviews-1\""));
+    EXPECT_EQ(pr2_inm_second, std::string("\"reviews-2\""));
+    EXPECT_EQ(pr1_calls.load(), 2);
+    EXPECT_EQ(pr2_calls.load(), 2);
+}
+
+void test_conditional_multipage_response_bypasses_cache()
+{
+    // A multi-page response is NOT cached, because GitHub's pagination
+    // ETags validate one page at a time — a new item appended to a
+    // later page would not flip page 1's ETag and a cached snapshot
+    // would silently go stale. So the second call must re-paginate
+    // fully (no If-None-Match) and fetch page 2 again.
+    TestServer ts;
+    std::atomic<int> calls_p1{0};
+    std::atomic<int> calls_p2{0};
+    ts.svr().Get("/repos/o/r/pulls",
+        [&](const httplib::Request & req, httplib::Response & res) {
+            const std::string page = req.has_param("page")
+                ? req.get_param_value("page") : "1";
+            if (page == "1")
+            {
+                ++calls_p1;
+                // We must NEVER receive If-None-Match for this multi-page
+                // resource — caching is explicitly disabled.
+                EXPECT(req.get_header_value("If-None-Match").empty());
+                res.set_header("ETag", "\"page1\"");
+                res.set_header("Link",
+                    std::string("<") + ts.base_url()
+                    + "/repos/o/r/pulls?state=open&sort=updated&direction=desc&per_page=100&page=2>; rel=\"next\"");
+                res.status = 200;
+                res.set_content(
+                    R"([{"number":1,"head":{"sha":"a"},"updated_at":"2026-05-01T10:00:00Z"}])",
+                    "application/json");
+            }
+            else
+            {
+                ++calls_p2;
+                res.status = 200;
+                res.set_content(
+                    R"([{"number":2,"head":{"sha":"b"},"updated_at":"2026-05-01T11:00:00Z"}])",
+                    "application/json");
+            }
+        });
+    GithubClient gh(make_cfg(ts));
+    auto first = gh.list_open_prs();
+    EXPECT_EQ(first.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(calls_p1.load(), 1);
+    EXPECT_EQ(calls_p2.load(), 1);
+
+    auto second = gh.list_open_prs();
+    EXPECT_EQ(second.size(), static_cast<std::size_t>(2));
+    // Both pages re-fetched fresh; no cache reuse.
+    EXPECT_EQ(calls_p1.load(), 2);
+    EXPECT_EQ(calls_p2.load(), 2);
+}
+
+void test_conditional_existing_single_page_cache_dropped_when_grown_to_multipage()
+{
+    // First call: single-page response, cached. Second call: same
+    // endpoint now multi-page; the old cache entry must be discarded
+    // so a third call doesn't send a stale If-None-Match.
+    TestServer ts;
+    std::atomic<int> calls{0};
+    std::vector<std::string> seen_inm;
+    ts.svr().Get("/repos/o/r/pulls",
+        [&](const httplib::Request & req, httplib::Response & res) {
+            const int n = ++calls;
+            const std::string page = req.has_param("page")
+                ? req.get_param_value("page") : "1";
+            seen_inm.push_back(req.get_header_value("If-None-Match"));
+
+            if (page != "1")
+            {
+                res.status = 200;
+                res.set_content(
+                    R"([{"number":2,"head":{"sha":"b"},"updated_at":"2026-05-01T11:00:00Z"}])",
+                    "application/json");
+                return;
+            }
+            if (n == 1)
+            {
+                // Single page initially.
+                res.set_header("ETag", "\"v1\"");
+                res.status = 200;
+                res.set_content(
+                    R"([{"number":1,"head":{"sha":"a"},"updated_at":"2026-05-01T10:00:00Z"}])",
+                    "application/json");
+            }
+            else if (n == 2)
+            {
+                // Now multi-page. Bot is sending If-None-Match: "v1" —
+                // we ignore it and serve 200 with a Link to page 2.
+                res.set_header("ETag", "\"v2\"");
+                res.set_header("Link",
+                    std::string("<") + ts.base_url()
+                    + "/repos/o/r/pulls?state=open&sort=updated&direction=desc&per_page=100&page=2>; rel=\"next\"");
+                res.status = 200;
+                res.set_content(
+                    R"([{"number":1,"head":{"sha":"a"},"updated_at":"2026-05-01T10:00:00Z"}])",
+                    "application/json");
+            }
+            else
+            {
+                // Third request (after grown-to-multipage drop): must
+                // NOT carry If-None-Match.
+                EXPECT(req.get_header_value("If-None-Match").empty());
+                res.set_header("ETag", "\"v3\"");
+                res.set_header("Link",
+                    std::string("<") + ts.base_url()
+                    + "/repos/o/r/pulls?state=open&sort=updated&direction=desc&per_page=100&page=2>; rel=\"next\"");
+                res.status = 200;
+                res.set_content(
+                    R"([{"number":1,"head":{"sha":"a"},"updated_at":"2026-05-01T10:00:00Z"}])",
+                    "application/json");
+            }
+        });
+    GithubClient gh(make_cfg(ts));
+    (void)gh.list_open_prs(); // n=1, caches "v1"
+    (void)gh.list_open_prs(); // n=2, served 200 multi-page; cache MUST drop "v1"
+    (void)gh.list_open_prs(); // n=3, must NOT send If-None-Match
+}
+
+void test_conditional_request_carries_default_headers()
+{
+    // The conditional request must still ship Authorization +
+    // X-GitHub-Api-Version etc.; the new If-None-Match is additive.
+    TestServer ts;
+    std::string captured_auth;
+    std::string captured_ver;
+    ts.svr().Get("/repos/o/r/pulls",
+        [&](const httplib::Request & req, httplib::Response & res) {
+            captured_auth = req.get_header_value("Authorization");
+            captured_ver = req.get_header_value("X-GitHub-Api-Version");
+            res.set_header("ETag", "\"x\"");
+            res.status = 200;
+            res.set_content("[]", "application/json");
+        });
+    GithubClient gh(make_cfg(ts));
+    (void)gh.list_open_prs();
+    (void)gh.list_open_prs(); // second call would carry If-None-Match too
+    EXPECT_EQ(captured_auth, std::string("Bearer test-token"));
+    EXPECT_EQ(captured_ver, std::string("2022-11-28"));
+}
+
+void test_list_open_prs_url_has_sort_updated_desc()
+{
+    // The sort hint we baked into list_open_prs must be on the wire.
+    TestServer ts;
+    std::string captured_query;
+    ts.svr().Get("/repos/o/r/pulls",
+        [&](const httplib::Request & req, httplib::Response & res) {
+            captured_query.clear();
+            for (const auto & [k, v] : req.params)
+            {
+                if (!captured_query.empty()) captured_query += '&';
+                captured_query += k + "=" + v;
+            }
+            res.status = 200;
+            res.set_content("[]", "application/json");
+        });
+    GithubClient gh(make_cfg(ts));
+    (void)gh.list_open_prs();
+    EXPECT(captured_query.find("sort=updated") != std::string::npos);
+    EXPECT(captured_query.find("direction=desc") != std::string::npos);
+    EXPECT(captured_query.find("state=open") != std::string::npos);
+}
+
 } // namespace
 
 int main()
@@ -469,6 +817,15 @@ int main()
     test_stream_diff_truncates_at_cap();
     test_stream_diff_below_cap_not_truncated();
     test_stream_diff_sends_diff_accept_header();
+
+    test_conditional_etag_round_trip_304();
+    test_conditional_200_invalidates_cache_with_new_body();
+    test_conditional_no_etag_response_does_not_cache();
+    test_conditional_per_pr_reviews_cache_separately();
+    test_conditional_multipage_response_bypasses_cache();
+    test_conditional_existing_single_page_cache_dropped_when_grown_to_multipage();
+    test_conditional_request_carries_default_headers();
+    test_list_open_prs_url_has_sort_updated_desc();
 
     std::cerr << "github_transport tests: " << g_passed << " passed, "
               << g_failed << " failed\n";
