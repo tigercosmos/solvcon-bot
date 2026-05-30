@@ -229,6 +229,13 @@ helpers in `scripts/e2e_lib.sh`:
 than the gh-authed user — GitHub blocks self-approval. The script
 fails fast with a clear message if that's not the case.
 
+Set `E2E_KEEP_ARTIFACTS=1` to skip the post-test deletion/dismissal
+so the mention, the bot's reply, and any APPROVED review stay on the
+PR for manual inspection. The setup-time stale-review dismissal still
+runs in `e2e_auto.sh` (otherwise a prior run's APPROVED would pre-empt
+the new approval the script submits); dismissals are themselves
+preserved as DISMISSED entries in the PR's review history.
+
 The script:
 
 1. Reads `.env`, verifies `gh` is authed as someone other than the bot.

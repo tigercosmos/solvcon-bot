@@ -189,10 +189,18 @@ e2e_stop_bot() {
 
 # Returns 0 if a matching reply is found before TIMEOUT_SEC; sets
 # BOT_REPLY_ID. Returns 1 (after printing the bot log tail) on timeout.
+# A third optional arg BASELINE_IDS (space-separated) filters out reply
+# IDs that were already present before the test started — used by
+# scenarios where the marker key is fixed across runs (auto path:
+# trigger=first-approval is the same forever). Without this filter,
+# E2E_KEEP_ARTIFACTS would cause a stale reply to be picked up and
+# the test would report PASS without ever exercising the bot.
 e2e_find_bot_reply() {
     local key="$1"
     local timeout="${2:-${E2E_TIMEOUT_SEC:-90}}"
+    local baseline="${3:-}"
     echo "==> waiting up to ${timeout}s for bot to post a reply containing: $key"
+    [[ -n "$baseline" ]] && echo "    excluding baseline ids: $baseline"
     local deadline=$(( $(date +%s) + timeout ))
     BOT_REPLY_ID=""
     while (( $(date +%s) < deadline )); do
@@ -204,17 +212,23 @@ e2e_find_bot_reply() {
         fi
         local page
         page=$(gh api "repos/$GITHUB_REPO/issues/$TEST_PR_NUMBER/comments?per_page=100")
-        BOT_REPLY_ID=$(echo "$page" \
+        local candidates
+        candidates=$(echo "$page" \
             | jq -r --arg login "$BOT_HANDLE" --arg key "$key" '
                 [ .[]
                   | select(.user.login | ascii_downcase == ($login | ascii_downcase))
                   | select(.body | contains($key))
                   | .id
-                ] | first // empty')
-        if [[ -n "$BOT_REPLY_ID" && "$BOT_REPLY_ID" != "null" ]]; then
+                ] | .[]')
+        for cand in $candidates; do
+            # Skip baseline IDs (present before the run started).
+            if [[ -n "$baseline" ]] && [[ " $baseline " == *" $cand "* ]]; then
+                continue
+            fi
+            BOT_REPLY_ID="$cand"
             echo "==> bot reply id: $BOT_REPLY_ID"
             return 0
-        fi
+        done
     done
     echo "==> last 30 lines of bot log:" >&2
     tail -30 "$BOT_LOG" >&2 || true
@@ -272,10 +286,21 @@ e2e_list_bot_replies() {
           | .id'
 }
 
+# When E2E_KEEP_ARTIFACTS is non-empty, all of the *delete*/*dismiss*
+# helpers below short-circuit so the bot reply, the mention, and any
+# approvals stay on the PR for inspection.
+e2e_keep_artifacts() {
+    [[ -n "${E2E_KEEP_ARTIFACTS:-}" ]]
+}
+
 # Delete a comment authored by the bot, using BOT_PAT.
 e2e_bot_delete_comment() {
     local id="$1"
     [[ -z "$id" || "$id" == "null" ]] && return 0
+    if e2e_keep_artifacts; then
+        echo "==> keeping bot comment id $id (E2E_KEEP_ARTIFACTS)"
+        return 0
+    fi
     echo "==> deleting bot comment id $id (BOT_PAT)"
     curl -sS -o /dev/null -w 'bot-delete: HTTP %{http_code}\n' \
         -X DELETE \
@@ -291,6 +316,10 @@ e2e_bot_delete_comment() {
 e2e_user_delete_comment() {
     local id="$1"
     [[ -z "$id" || "$id" == "null" ]] && return 0
+    if e2e_keep_artifacts; then
+        echo "==> keeping user comment id $id (E2E_KEEP_ARTIFACTS)"
+        return 0
+    fi
     echo "==> deleting user comment id $id"
     gh api "repos/$GITHUB_REPO/issues/comments/$id" \
         --method DELETE --silent >/dev/null 2>&1 || true

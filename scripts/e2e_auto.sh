@@ -68,17 +68,32 @@ cleanup() {
         e2e_bot_delete_comment "$BOT_REPLY_ID"
     fi
     if [[ -n "${CREATED_REVIEW_ID:-}" ]]; then
-        echo "==> dismissing created APPROVED review id=$CREATED_REVIEW_ID"
-        gh api "repos/$GITHUB_REPO/pulls/$TEST_PR_NUMBER/reviews/$CREATED_REVIEW_ID/dismissals" \
-            --method PUT \
-            -f message="dismissed by modmesh-bot e2e cleanup" \
-            --silent >/dev/null 2>&1 || true
+        if e2e_keep_artifacts; then
+            echo "==> keeping APPROVED review id=$CREATED_REVIEW_ID (E2E_KEEP_ARTIFACTS)"
+        else
+            echo "==> dismissing created APPROVED review id=$CREATED_REVIEW_ID"
+            gh api "repos/$GITHUB_REPO/pulls/$TEST_PR_NUMBER/reviews/$CREATED_REVIEW_ID/dismissals" \
+                --method PUT \
+                -f message="dismissed by modmesh-bot e2e cleanup" \
+                --silent >/dev/null 2>&1 || true
+        fi
     fi
     set -e
 }
 trap cleanup EXIT
 
 echo "==> ROUND 1: starting bot"
+
+# The auto-path marker is `source=auto pr=N trigger=first-approval -->`
+# — there's no per-run nonce in it. If a previous run left its bot
+# reply on the PR (E2E_KEEP_ARTIFACTS=1), the bot would marker-dedupe
+# this run away and a naive `e2e_find_bot_reply` would lock onto the
+# stale comment. Capture the baseline so we can demand a NEW reply.
+BASELINE_IDS=$(e2e_list_bot_replies "$EXPECTED_KEY" | tr '\n' ' ')
+if [[ -n "$BASELINE_IDS" ]]; then
+    echo "==> baseline auto-marker reply ids (will be excluded): $BASELINE_IDS"
+fi
+
 e2e_start_bot
 
 # Give the bot one tick to settle on the current PR state before we
@@ -93,8 +108,17 @@ CREATED_REVIEW_ID=$(gh api "repos/$GITHUB_REPO/pulls/$TEST_PR_NUMBER/reviews" \
     -f body="$APPROVAL_BODY" \
     --jq '.id')
 
-if ! e2e_find_bot_reply "$EXPECTED_KEY"; then
-    echo "fatal: bot never posted an auto-path review" >&2
+if ! e2e_find_bot_reply "$EXPECTED_KEY" "${E2E_TIMEOUT_SEC:-90}" "$BASELINE_IDS"; then
+    if [[ -n "$BASELINE_IDS" ]]; then
+        echo "fatal: bot did not post a NEW auto-path review." >&2
+        echo "  Pre-existing replies (excluded): $BASELINE_IDS" >&2
+        echo "  Likely cause: a previous KEEP_ARTIFACTS run left a bot" >&2
+        echo "  comment on this PR with the same marker key; the bot's" >&2
+        echo "  dedupe correctly skipped re-posting. Delete the stale" >&2
+        echo "  comment(s) or use a fresh PR." >&2
+    else
+        echo "fatal: bot never posted an auto-path review" >&2
+    fi
     exit 1
 fi
 
