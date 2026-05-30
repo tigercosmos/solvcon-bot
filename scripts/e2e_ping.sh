@@ -75,7 +75,10 @@ fi
 USER_LOGIN=$(gh api user --jq '.login')
 echo "==> gh authed as: $USER_LOGIN"
 
-if [[ "${USER_LOGIN,,}" == "${BOT_HANDLE,,}" ]]; then
+# bash 3.2 (default on macOS) lacks ${var,,}; use tr for portability.
+lc() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
+
+if [[ "$(lc "$USER_LOGIN")" == "$(lc "$BOT_HANDLE")" ]]; then
     echo "fatal: gh is authed as the bot ($BOT_HANDLE)." >&2
     echo "  The mentioner must be a DIFFERENT collaborator." >&2
     exit 2
@@ -212,7 +215,7 @@ reply=$(gh api "repos/$GITHUB_REPO/issues/comments/$bot_reply_id")
 reply_body=$(echo "$reply" | jq -r '.body')
 reply_login=$(echo "$reply" | jq -r '.user.login')
 
-if [[ "${reply_login,,}" != "${BOT_HANDLE,,}" ]]; then
+if [[ "$(lc "$reply_login")" != "$(lc "$BOT_HANDLE")" ]]; then
     echo "fatal: reply author '$reply_login' != expected '$BOT_HANDLE'" >&2
     exit 1
 fi

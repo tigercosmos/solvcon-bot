@@ -105,11 +105,18 @@ it immediately.
 state in both scanning loops, and only treat `,`/`}`/`]` as a value
 terminator when not currently inside a quoted string.
 
+**Local workaround (already applied, not committed upstream).** The
+scan loops in both `parse_object` and `parse_array` now carry an
+`in_string` + `escape` flag pair; `,` / `}` / `]` are only treated
+as a value terminator when `in_string` is false. Verified end-to-end:
+the bot now parses real `/repos/.../issues/comments` and `/pulls`
+responses (which embed `following_url`-style strings containing `{`,
+`}`, slashes) without crashing.
+
 **Resolution plan.** Same as bug #1: upstream a single PR to
 `solvcon/modmesh` that fixes both (string-state scanning here, empty
 arrays/objects in #1), then bump our submodule SHA. Until then,
-modmesh-bot's parsing of any list endpoint will choke on punctuation
-in string fields.
+`third_party/modmesh` has a dirty working tree carrying both patches.
 
 ---
 
