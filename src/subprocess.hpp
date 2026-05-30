@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace modmesh_bot
@@ -29,7 +30,15 @@ struct RunResult
 // `extra_env_allowlist` adds further variable NAMES whose values are
 // passed through from the parent if set. The operator uses this to
 // give the reviewer CLI its API credentials, e.g. ANTHROPIC_API_KEY
-// or OPENAI_API_KEY. The diff itself is never put on argv or env.
+// or OPENAI_API_KEY.
+//
+// `extra_env_values` adds explicit KEY=VALUE pairs the caller wants
+// the child to see, regardless of what's in the parent env. Use this
+// for reviewer-side knobs like CLAUDE_EFFORT that are configured by
+// the operator at startup rather than inherited. Values here OVERRIDE
+// allowlist-passthrough entries with the same key.
+//
+// The diff itself is never put on argv or env.
 //
 // argv[0] must name the executable; passed to execvp so PATH resolution
 // happens.
@@ -41,6 +50,7 @@ RunResult run_subprocess(
     const std::string & stdin_input,
     std::size_t max_output_bytes,
     int timeout_seconds,
-    const std::vector<std::string> & extra_env_allowlist = {});
+    const std::vector<std::string> & extra_env_allowlist = {},
+    const std::vector<std::pair<std::string, std::string>> & extra_env_values = {});
 
 } // namespace modmesh_bot

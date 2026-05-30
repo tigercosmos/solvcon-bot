@@ -68,7 +68,7 @@ jobs:
           BOT_HANDLE=${{ secrets.E2E_BOT_HANDLE }}
           BOT_PAT=${{ secrets.E2E_BOT_PAT }}
           TEST_PR_NUMBER=${{ secrets.E2E_PR_NUMBER }}
-          REVIEWER_ARGV='["/bin/cat"]'
+          REVIEWER_KIND=mock
           STATE_FILE=/tmp/modmesh-bot-e2e.state
           EOF
           # Mask any echoed secret value (belt-and-braces).

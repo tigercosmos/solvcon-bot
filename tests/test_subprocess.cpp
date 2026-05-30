@@ -110,7 +110,7 @@ void test_spawn_failure_for_missing_binary()
 void test_stderr_captured_separately()
 {
     // /bin/sh is a shell, fine to use inside tests; the production-side
-    // ban is on the bot using a shell to interpret REVIEWER_ARGV.
+    // ban is on the bot using a shell to interpret the reviewer argv.
     RunResult r = run_subprocess(
         {"/bin/sh", "-c", "echo out; echo err 1>&2"},
         "", 4096, 5);
@@ -187,6 +187,61 @@ void test_extra_env_allowlist_drops_unset_vars()
     EXPECT(r.stdout_buf.find("MODMESH_BOT_TEST_NOT_SET") == std::string::npos);
 }
 
+void test_extra_env_values_set_explicit_var()
+{
+    // Var not in parent; explicit value is injected into child env.
+    ::unsetenv("MODMESH_BOT_TEST_EXPLICIT");
+    RunResult r = run_subprocess(
+        {"/usr/bin/env"}, "", 65536, 5,
+        /*allowlist=*/{},
+        /*values=*/{{"MODMESH_BOT_TEST_EXPLICIT", "hello-world"}});
+    EXPECT_EQ(r.exit_status, 0);
+    EXPECT(r.stdout_buf.find("MODMESH_BOT_TEST_EXPLICIT=hello-world")
+           != std::string::npos);
+}
+
+void test_extra_env_values_override_passthrough()
+{
+    // Parent has X=parent-value; allowlist would pass it through;
+    // explicit values override with "override-value".
+    ::setenv("MODMESH_BOT_TEST_OVERRIDE", "parent-value", 1);
+    RunResult r = run_subprocess(
+        {"/usr/bin/env"}, "", 65536, 5,
+        /*allowlist=*/{"MODMESH_BOT_TEST_OVERRIDE"},
+        /*values=*/{{"MODMESH_BOT_TEST_OVERRIDE", "override-value"}});
+    EXPECT_EQ(r.exit_status, 0);
+    EXPECT(r.stdout_buf.find("MODMESH_BOT_TEST_OVERRIDE=override-value")
+           != std::string::npos);
+    // Make sure the parent value is NOT present.
+    EXPECT(r.stdout_buf.find("MODMESH_BOT_TEST_OVERRIDE=parent-value")
+           == std::string::npos);
+    ::unsetenv("MODMESH_BOT_TEST_OVERRIDE");
+}
+
+void test_extra_env_values_overrides_empty_passthrough()
+{
+    // Regression for the upsert prefix-match bug: when an allowlisted
+    // var has an EMPTY value in the parent ("KEY="), the override must
+    // replace it, not append a duplicate. We test via a default-
+    // allowlisted name (LANG) to also pin the default-list behavior.
+    ::setenv("LANG", "", 1); // empty value
+    RunResult r = run_subprocess(
+        {"/usr/bin/env"}, "", 65536, 5,
+        /*allowlist=*/{},
+        /*values=*/{{"LANG", "overridden"}});
+    EXPECT_EQ(r.exit_status, 0);
+    // Exactly ONE LANG= line in the child env.
+    std::size_t count = 0;
+    std::size_t pos = 0;
+    while ((pos = r.stdout_buf.find("LANG=", pos)) != std::string::npos)
+    {
+        ++count;
+        pos += 5;
+    }
+    EXPECT_EQ(count, static_cast<std::size_t>(1));
+    EXPECT(r.stdout_buf.find("LANG=overridden") != std::string::npos);
+}
+
 void test_large_stdin_round_trip()
 {
     // 200 KB through cat. Stresses POLLOUT/POLLIN interleave.
@@ -219,6 +274,9 @@ int main()
     test_default_env_passes_user_and_logname();
     test_extra_env_allowlist_passes_through();
     test_extra_env_allowlist_drops_unset_vars();
+    test_extra_env_values_set_explicit_var();
+    test_extra_env_values_override_passthrough();
+    test_extra_env_values_overrides_empty_passthrough();
     test_large_stdin_round_trip();
 
     std::cerr << "subprocess tests: " << g_passed << " passed, "

@@ -9,10 +9,12 @@
 # shellcheck source=scripts/e2e_lib.sh
 source "$(dirname "$0")/e2e_lib.sh"
 
-# Force the reviewer to fail.
-REVIEWER_ARGV='["/bin/sh","-c","echo simulated reviewer error 1>&2; exit 17"]' \
+# Force the reviewer to fail by configuring the mock to exit non-zero.
+REVIEWER_KIND=mock \
+REVIEWER_MOCK_EXIT_CODE=17 \
 e2e_setup "${1:-.env}"
-REVIEWER_ARGV='["/bin/sh","-c","echo simulated reviewer error 1>&2; exit 17"]'
+REVIEWER_KIND=mock
+REVIEWER_MOCK_EXIT_CODE=17
 
 MENTION_BODY="modmesh-bot e2e reviewer-fail $NONCE — @${BOT_HANDLE} please review"
 e2e_post_mention "$MENTION_BODY"
@@ -40,9 +42,10 @@ if ! e2e_assert_no_bot_reply "$EXPECTED_KEY" 25; then
     exit 1
 fi
 
-# Bot log should contain the "reviewer exited 17" error at least once.
-if ! grep -q "reviewer exited 17" "$BOT_LOG"; then
-    echo "fatal: expected 'reviewer exited 17' in bot log; got:" >&2
+# Bot log should contain the "mock reviewer exited 17" error at least
+# once — MockReviewer wraps subprocess failures with its own prefix.
+if ! grep -q "mock reviewer exited 17" "$BOT_LOG"; then
+    echo "fatal: expected 'mock reviewer exited 17' in bot log; got:" >&2
     tail -30 "$BOT_LOG" >&2
     exit 1
 fi

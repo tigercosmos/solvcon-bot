@@ -23,7 +23,7 @@ on the PR diff, and the output is posted back as a PR comment.
 | Q3b | Ping authorization | **Repo collaborators only** — verified via `GET /repos/{o}/{r}/collaborators/{user}` |
 | Q3c | Ping pre-approval | Ping works at any time, independent of approval state |
 | Q4 | Comment shape | Plain issue comment via `POST /issues/{n}/comments`, with a hidden HTML-comment marker |
-| Q5 | AI CLI argv | `REVIEWER_ARGV` JSON array (parsed by modmesh JSON); `execvp` directly — **no shell** |
+| Q5 | Reviewer dispatch | `REVIEWER_KIND` enum (`mock`/`claude`/`codex`); each is a class implementing `IReviewer`; the factory in `src/reviewer.cpp` picks one at startup. The chosen class shapes the CLI invocation; `execvp` directly — **no shell** in the production path. |
 | Q6 | Poll interval | 30 s default |
 
 **Total third-party C++ deps:** two (cpp-httplib + modmesh). **Runtime link
@@ -119,12 +119,14 @@ modmesh-bot/
 │   └── modmesh/                    git submodule → solvcon/modmesh @ pinned sha
 ├── src/
 │   ├── main.cpp
-│   ├── config.hpp / .cpp           env-var driven config (incl. REVIEWER_ARGV JSON parsing)
+│   ├── config.hpp / .cpp           env-var driven config (incl. REVIEWER_KIND + per-kind knobs)
 │   ├── subprocess.hpp / .cpp       fork/execve, nonblocking pipes, sanitized env, killpg
 │   ├── github_types.hpp / .cpp     User, Review, PrSummary, PrDetail, IssueComment
 │   ├── github_client.hpp / .cpp    httplib::Client wrapper: pagination, headers, timeouts
 │   ├── state_store.hpp / .cpp      flock'd; reviewed-PR set + handled-comment set + cursor
-│   ├── reviewer.hpp / .cpp         assemble prompt, run AI CLI, return text
+│   ├── reviewer.hpp / .cpp         IReviewer interface + factory + MockReviewer
+│   ├── reviewer_claude.cpp         ClaudeReviewer (claude -p, CLAUDE_EFFORT)
+│   ├── reviewer_codex.cpp          CodexReviewer (codex exec, -c reasoning.effort)
 │   ├── mention.hpp / .cpp          regex-based @-mention detector
 │   └── watcher.hpp / .cpp          polling loop + auto/ping dispatch
 └── tests/
@@ -219,7 +221,13 @@ Outgoing JSON (e.g. `{"body": "..."}`) emitted via
 | `GITHUB_TOKEN` | yes | — | API auth |
 | `GITHUB_REPO` | yes | — | e.g. `tigercosmos/modmesh` |
 | `BOT_HANDLE` | yes | — | bot's GitHub username, no `@` |
-| `REVIEWER_ARGV` | yes | — | JSON array, e.g. `["claude","-p"]` or `["codex","exec"]` |
+| `REVIEWER_KIND` | no | `mock` | One of `mock`/`claude`/`codex`. Selects the IReviewer subclass at startup. |
+| `REVIEWER_MODEL` | no | — | Optional model name forwarded to the AI CLI via `--model`. |
+| `REVIEWER_EFFORT` | no | — | For `claude`: exported as `CLAUDE_EFFORT` to the child. For `codex`: passed as `-c reasoning.effort=$value`. |
+| `REVIEWER_PROMPT` | no | (built-in) | Literal prompt that replaces the built-in review preamble. Mutually exclusive with `REVIEWER_PROMPT_FILE`. |
+| `REVIEWER_PROMPT_FILE` | no | (built-in) | Path whose contents replace the built-in preamble. |
+| `REVIEWER_MOCK_EXIT_CODE` | no | `0` | Mock-only. Non-zero makes the mock exit with this code (forced-failure tests). |
+| `REVIEWER_MOCK_OUTPUT` | no | — | Mock-only. If set, the mock prints this string instead of echoing the diff. |
 | `POLL_INTERVAL_SEC` | no | `30` | polling cadence |
 | `STATE_FILE` | no | `./modmesh-bot.state` | persistence + lock file |
 | `MAX_DIFF_BYTES` | no | `200000` | abort diff download past this |
@@ -230,10 +238,14 @@ Outgoing JSON (e.g. `{"body": "..."}`) emitted via
 | `HTTP_WRITE_TIMEOUT_SEC` | no | `30` | cpp-httplib `set_write_timeout` |
 | `REVIEWER_ENV_PASSTHROUGH` | no | empty | Comma-separated list of env-var names to pass through from the bot to the reviewer subprocess on top of the defaults (`PATH`/`HOME`/`LANG`/`TERM`/`USER`/`LOGNAME`). Typically `ANTHROPIC_API_KEY` and/or `OPENAI_API_KEY`. |
 
-`REVIEWER_ARGV` is a JSON array specifically because shell parsing of a
-single string would either drop legitimate quoted args or open an injection
-hole. The first element is the executable; the rest are `execvp` argv. No
-`/bin/sh -c`, ever.
+The reviewer is selected by `REVIEWER_KIND` and constructed by the
+factory in `src/reviewer.cpp`. Each kind is its own class implementing
+`IReviewer::run(diff)`; the class composes the CLI invocation (argv,
+stdin, env passthrough, env values) so the bot itself never assembles
+ad-hoc shell strings. `execvp` directly — no `/bin/sh -c` in the
+production path; the mock kind opts into `/bin/sh -c "exit N"` only
+when explicitly asked to simulate a reviewer crash, and that command
+is fully self-contained (the diff never appears in argv).
 
 ---
 
@@ -399,7 +411,7 @@ cmake --build build
 
 ## 14. Milestones
 
-1. **M1 — skeleton & config:** submodule + vendored pinned httplib, CMake builds an empty binary (macOS + Linux), `Config::from_env` (incl. `BOT_HANDLE`, `REVIEWER_ARGV` JSON), `StateStore` opens with `flock`, main loop logs each tick.
+1. **M1 — skeleton & config:** submodule + vendored pinned httplib, CMake builds an empty binary (macOS + Linux), `Config::from_env` (incl. `BOT_HANDLE`, `REVIEWER_KIND` enum + per-kind knobs), `StateStore` opens with `flock`, main loop logs each tick.
 2. **M2 — github_types:** `User`, `Review`, `PrSummary`, `PrDetail`, `IssueComment` as `SerializableItem`s; round-trip unit tests against captured real-response JSON.
 3. **M3 — GithubClient:** typed list endpoints with `walk_pages`, default headers, timeouts, `stream_diff` with abort, `get_issue_detail`, `is_collaborator` (404 vs 403 handling), `post_comment`. Smoke-test against a real test repo.
 4. **M4 — StateStore:** reviewed-PR set + handled-comment set + `(updated_at, id)` cursor; `flock` + atomic rename; round-trip tests.
@@ -423,7 +435,7 @@ This plan was reviewed by `codex exec`. Substantive fixes incorporated:
 6. **Collaborator token scopes** documented; 403 ≠ "not a collaborator" (§6).
 7. **Idempotency marker** in comment bodies + `flock` on state file (§12).
 8. **Sanitized subprocess env**, no `GITHUB_TOKEN` to child (§10).
-9. **`REVIEWER_ARGV` is now a JSON array** parsed via modmesh JSON (§8); `execvp` directly, no shell.
+9. **Reviewer dispatched by enum + class hierarchy** (`REVIEWER_KIND` selects `mock`/`claude`/`codex`, each with its own class; see §8); `execvp` directly, no shell in the production path.
 10. **Subprocess I/O:** nonblocking pipes, single `poll` loop, output caps, `killpg` (§10).
 11. **HTTP timeouts** + **streaming diff with abort** at `MAX_DIFF_BYTES` (§11).
 12. **OpenSSL 3 on macOS** documented (brew + `OPENSSL_ROOT_DIR`) (§13).

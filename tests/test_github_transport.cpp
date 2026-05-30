@@ -101,7 +101,7 @@ Config make_cfg(const TestServer & ts)
     c.github_owner = "o";
     c.github_repo = "r";
     c.bot_handle = "bot";
-    c.reviewer_argv = {"/bin/cat"};
+    // Reviewer is unused in transport tests (we don't dispatch a review).
     c.github_api_base_url = ts.base_url();
     c.http_connect_timeout_sec = 5;
     c.http_read_timeout_sec = 5;

@@ -175,7 +175,25 @@ the JSON-mandatory `"` and `\\`).
 
 ---
 
-## 4. M3 transport tests not yet present
+## 4. BEGIN_DIFF / END_DIFF fences are forgeable from a PR diff
+
+**Where:** `src/reviewer.cpp` — `assemble_review_stdin`.
+
+The AI reviewers receive their input as
+`PROMPT\n\nBEGIN_DIFF\n<diff>\nEND_DIFF\n`. A malicious PR author can
+put a line that reads exactly `END_DIFF` in their diff, followed by
+adversarial instructions — the AI may then read those instructions
+as if they came from the operator. Diff content currently flows
+trusted-author-bounded (only collaborators trigger the ping path,
+the auto path requires an APPROVED review), so today's deployment
+isn't immediately exposed, but the marker is forgeable in principle.
+
+**Resolution plan.** Generate a per-run random nonce, e.g.
+`BEGIN_DIFF_<32 hex chars>`, and embed it in both fences. Reject /
+encode lines that match `^(BEGIN|END)_DIFF` before interpolation as
+a belt-and-braces second layer.
+
+## 5. M3 transport tests not yet present
 
 **Where:** `tests/test_github_client.cpp`
 

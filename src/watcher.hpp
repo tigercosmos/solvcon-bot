@@ -13,11 +13,11 @@ namespace modmesh_bot
 {
 
 class GithubClient;
-class Reviewer;
+class IReviewer;
 class StateStore;
 
 // Abstract IO surface used by Watcher. Production wires this to the
-// concrete GithubClient + Reviewer + StateStore via LiveWatcherIo;
+// concrete GithubClient + IReviewer + StateStore via LiveWatcherIo;
 // tests substitute their own implementation.
 class WatcherIo
 {
@@ -53,7 +53,7 @@ public:
 class LiveWatcherIo : public WatcherIo
 {
 public:
-    LiveWatcherIo(GithubClient & gh, Reviewer & rv, StateStore & state);
+    LiveWatcherIo(GithubClient & gh, IReviewer & rv, StateStore & state);
 
     std::vector<PrSummary> list_open_prs() override;
     std::vector<Review> list_reviews(int pr_number) override;
@@ -78,7 +78,7 @@ public:
 
 private:
     GithubClient & gh_;
-    Reviewer & rv_;
+    IReviewer & rv_;
     StateStore & state_;
 };
 

@@ -111,7 +111,9 @@ struct ChildEnv
     std::vector<char *> ptrs;
 };
 
-ChildEnv build_sanitized_env(const std::vector<std::string> & extra_allowlist)
+ChildEnv build_sanitized_env(
+    const std::vector<std::string> & extra_allowlist,
+    const std::vector<std::pair<std::string, std::string>> & extra_values)
 {
     ChildEnv e;
     // Default allowlist: process basics that every CLI expects + the
@@ -120,11 +122,33 @@ ChildEnv build_sanitized_env(const std::vector<std::string> & extra_allowlist)
     const char * keep[] = {
         "PATH", "HOME", "LANG", "TERM", "USER", "LOGNAME"
     };
+
+    // Build a "key -> entry index" map so an extra_value can override
+    // a passthrough with the same key. We iterate the default keep
+    // list first, then the passthrough list, then the explicit values.
+    auto upsert = [&](const std::string & key, const std::string & val)
+    {
+        const std::string prefix = key + "=";
+        for (auto & existing : e.strings)
+        {
+            // `>=` not `>`: an existing "KEY=" (empty value, e.g.
+            // empty parent $LANG) IS a match for prefix "KEY=" and
+            // must be overwritten, not duplicated.
+            if (existing.size() >= prefix.size()
+                && existing.compare(0, prefix.size(), prefix) == 0)
+            {
+                existing = key + "=" + val;
+                return;
+            }
+        }
+        e.strings.emplace_back(key + "=" + val);
+    };
+
     for (const char * key : keep)
     {
         if (const char * v = std::getenv(key); v != nullptr)
         {
-            e.strings.emplace_back(std::string(key) + "=" + v);
+            upsert(key, v);
         }
     }
     for (const std::string & key : extra_allowlist)
@@ -132,9 +156,15 @@ ChildEnv build_sanitized_env(const std::vector<std::string> & extra_allowlist)
         if (key.empty()) continue;
         if (const char * v = std::getenv(key.c_str()); v != nullptr)
         {
-            e.strings.emplace_back(key + "=" + v);
+            upsert(key, v);
         }
     }
+    for (const auto & [key, val] : extra_values)
+    {
+        if (key.empty()) continue;
+        upsert(key, val);
+    }
+
     e.ptrs.reserve(e.strings.size() + 1);
     for (auto & s : e.strings) e.ptrs.push_back(s.data());
     e.ptrs.push_back(nullptr);
@@ -171,7 +201,8 @@ RunResult run_subprocess(
     const std::string & stdin_input,
     std::size_t max_output_bytes,
     int timeout_seconds,
-    const std::vector<std::string> & extra_env_allowlist)
+    const std::vector<std::string> & extra_env_allowlist,
+    const std::vector<std::pair<std::string, std::string>> & extra_env_values)
 {
     if (argv.empty())
     {
@@ -187,7 +218,7 @@ RunResult run_subprocess(
     // fork(). Doing it in the child would call non-async-signal-safe
     // routines (getenv, malloc, std::string ctors) between fork() and
     // execvp(), which is unsafe if the bot ever becomes multithreaded.
-    ChildEnv env = build_sanitized_env(extra_env_allowlist);
+    ChildEnv env = build_sanitized_env(extra_env_allowlist, extra_env_values);
     std::vector<std::string> owned_argv = argv; // own the strings for execvp
     std::vector<char *> argv_ptrs = build_argv_pointers(owned_argv);
 

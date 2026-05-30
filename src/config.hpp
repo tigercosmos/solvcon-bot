@@ -1,11 +1,21 @@
 #pragma once
 
 #include <cstdint>
+#include <ostream>
 #include <string>
 #include <vector>
 
 namespace modmesh_bot
 {
+
+// Which reviewer class the factory should instantiate. The strings on
+// the right are what REVIEWER_KIND accepts (case-insensitive).
+enum class ReviewerKind
+{
+    Mock,   // "mock"   — spawns /bin/cat; knobs for forced failure / fixed output
+    Claude, // "claude" — spawns `claude -p [--model X]`, sets CLAUDE_EFFORT if configured
+    Codex,  // "codex"  — spawns `codex exec [--model X] [-c reasoning.effort=E]`
+};
 
 struct Config
 {
@@ -13,7 +23,17 @@ struct Config
     std::string github_owner;
     std::string github_repo;
     std::string bot_handle;
-    std::vector<std::string> reviewer_argv;
+
+    // Reviewer selection. The factory in src/reviewer.cpp dispatches
+    // on `reviewer_kind`. Per-kind knobs live in the same struct so
+    // there's exactly one place to read them.
+    ReviewerKind reviewer_kind = ReviewerKind::Mock;
+    std::string reviewer_model;   // --model NAME (claude/codex; empty -> CLI default)
+    std::string reviewer_effort;  // CLAUDE_EFFORT env (claude) / reasoning.effort (codex)
+    std::string reviewer_prompt;  // override built-in review prompt; empty -> default
+    // For Mock only:
+    int reviewer_mock_exit_code = 0;     // non-zero -> mock fails with this code
+    std::string reviewer_mock_output;    // if non-empty, mock prints this instead of echoing
 
     int poll_interval_sec = 30;
     std::string state_file = "./modmesh-bot.state";
@@ -44,5 +64,16 @@ struct Config
 
     static Config from_env();
 };
+
+// Case-insensitive parse of the REVIEWER_KIND env value. Throws
+// std::runtime_error if the value is not one of mock/claude/codex.
+ReviewerKind parse_reviewer_kind(const std::string & s);
+
+const char * to_string(ReviewerKind k);
+
+inline std::ostream & operator<<(std::ostream & os, ReviewerKind k)
+{
+    return os << to_string(k);
+}
 
 } // namespace modmesh_bot

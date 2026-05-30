@@ -5,7 +5,11 @@
 
 #include "config.hpp"
 
+#include <unistd.h>
+
+#include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -46,15 +50,18 @@ int g_passed = 0;
     } while (0)
 
 using modmesh_bot::Config;
+using modmesh_bot::ReviewerKind;
 
-// All the env vars Config::from_env reads. Tests scrub all of them
-// before each scenario so previous tests can't leak state.
 const char * const k_all_vars[] = {
-    "GITHUB_TOKEN", "GITHUB_REPO", "BOT_HANDLE", "REVIEWER_ARGV",
+    "GITHUB_TOKEN", "GITHUB_REPO", "BOT_HANDLE",
     "POLL_INTERVAL_SEC", "STATE_FILE",
     "MAX_DIFF_BYTES", "MAX_OUTPUT_BYTES", "SUBPROCESS_TIMEOUT_SEC",
     "HTTP_CONNECT_TIMEOUT_SEC", "HTTP_READ_TIMEOUT_SEC", "HTTP_WRITE_TIMEOUT_SEC",
     "REVIEWER_ENV_PASSTHROUGH",
+    "REVIEWER_KIND", "REVIEWER_MODEL", "REVIEWER_EFFORT",
+    "REVIEWER_PROMPT", "REVIEWER_PROMPT_FILE",
+    "REVIEWER_MOCK_EXIT_CODE", "REVIEWER_MOCK_OUTPUT",
+    "GITHUB_API_BASE_URL",
 };
 
 void clear_env()
@@ -67,7 +74,6 @@ void set_required_defaults()
     ::setenv("GITHUB_TOKEN", "tok", 1);
     ::setenv("GITHUB_REPO", "owner/repo", 1);
     ::setenv("BOT_HANDLE", "the-bot", 1);
-    ::setenv("REVIEWER_ARGV", R"(["claude","-p"])", 1);
 }
 
 bool throws_with_substring(void (*fn)(), const std::string & needle)
@@ -80,9 +86,9 @@ bool throws_with_substring(void (*fn)(), const std::string & needle)
     return false;
 }
 
-// --- happy path ---------------------------------------------------------
+// --- happy path ----------------------------------------------------------
 
-void test_required_only()
+void test_required_only_defaults_to_mock()
 {
     clear_env();
     set_required_defaults();
@@ -91,11 +97,16 @@ void test_required_only()
     EXPECT_EQ(c.github_owner, std::string("owner"));
     EXPECT_EQ(c.github_repo, std::string("repo"));
     EXPECT_EQ(c.bot_handle, std::string("the-bot"));
-    EXPECT_EQ(c.reviewer_argv.size(), static_cast<std::size_t>(2));
-    EXPECT_EQ(c.reviewer_argv[0], std::string("claude"));
-    EXPECT_EQ(c.reviewer_argv[1], std::string("-p"));
 
-    // Defaults from plan §8.
+    // Reviewer defaults: Mock, no model/effort/prompt, mock knobs zero.
+    EXPECT_EQ(c.reviewer_kind, ReviewerKind::Mock);
+    EXPECT(c.reviewer_model.empty());
+    EXPECT(c.reviewer_effort.empty());
+    EXPECT(c.reviewer_prompt.empty());
+    EXPECT_EQ(c.reviewer_mock_exit_code, 0);
+    EXPECT(c.reviewer_mock_output.empty());
+
+    // Numeric defaults from plan.md §8.
     EXPECT_EQ(c.poll_interval_sec, 30);
     EXPECT_EQ(c.state_file, std::string("./modmesh-bot.state"));
     EXPECT_EQ(c.max_diff_bytes, static_cast<std::size_t>(200000));
@@ -129,16 +140,6 @@ void test_overrides_applied()
     EXPECT_EQ(c.http_write_timeout_sec, 3);
 }
 
-void test_reviewer_argv_single_element()
-{
-    clear_env();
-    set_required_defaults();
-    ::setenv("REVIEWER_ARGV", R"(["only"])", 1);
-    Config c = Config::from_env();
-    EXPECT_EQ(c.reviewer_argv.size(), static_cast<std::size_t>(1));
-    EXPECT_EQ(c.reviewer_argv[0], std::string("only"));
-}
-
 // --- required-missing ---------------------------------------------------
 
 void test_missing_token()
@@ -146,9 +147,7 @@ void test_missing_token()
     clear_env();
     ::setenv("GITHUB_REPO", "o/r", 1);
     ::setenv("BOT_HANDLE", "b", 1);
-    ::setenv("REVIEWER_ARGV", R"(["x"])", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "GITHUB_TOKEN"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "GITHUB_TOKEN"));
 }
 
 void test_missing_repo()
@@ -156,9 +155,7 @@ void test_missing_repo()
     clear_env();
     ::setenv("GITHUB_TOKEN", "t", 1);
     ::setenv("BOT_HANDLE", "b", 1);
-    ::setenv("REVIEWER_ARGV", R"(["x"])", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "GITHUB_REPO"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "GITHUB_REPO"));
 }
 
 void test_missing_bot_handle()
@@ -166,42 +163,26 @@ void test_missing_bot_handle()
     clear_env();
     ::setenv("GITHUB_TOKEN", "t", 1);
     ::setenv("GITHUB_REPO", "o/r", 1);
-    ::setenv("REVIEWER_ARGV", R"(["x"])", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "BOT_HANDLE"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "BOT_HANDLE"));
 }
 
-void test_missing_reviewer_argv()
-{
-    clear_env();
-    ::setenv("GITHUB_TOKEN", "t", 1);
-    ::setenv("GITHUB_REPO", "o/r", 1);
-    ::setenv("BOT_HANDLE", "b", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "REVIEWER_ARGV"));
-}
-
-// Empty string variants are treated as unset.
 void test_empty_required_var_treated_as_missing()
 {
     clear_env();
     ::setenv("GITHUB_TOKEN", "", 1);
     ::setenv("GITHUB_REPO", "o/r", 1);
     ::setenv("BOT_HANDLE", "b", 1);
-    ::setenv("REVIEWER_ARGV", R"(["x"])", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "GITHUB_TOKEN"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "GITHUB_TOKEN"));
 }
 
-// --- GITHUB_REPO parsing -----------------------------------------------
+// --- GITHUB_REPO parsing ------------------------------------------------
 
 void test_repo_no_slash_rejected()
 {
     clear_env();
     set_required_defaults();
     ::setenv("GITHUB_REPO", "missingslash", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "owner/repo"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "owner/repo"));
 }
 
 void test_repo_too_many_slashes_rejected()
@@ -209,8 +190,7 @@ void test_repo_too_many_slashes_rejected()
     clear_env();
     set_required_defaults();
     ::setenv("GITHUB_REPO", "a/b/c", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "extra slashes"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "extra slashes"));
 }
 
 void test_repo_empty_owner_rejected()
@@ -218,8 +198,7 @@ void test_repo_empty_owner_rejected()
     clear_env();
     set_required_defaults();
     ::setenv("GITHUB_REPO", "/repo", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "owner/repo"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "owner/repo"));
 }
 
 void test_repo_empty_name_rejected()
@@ -227,39 +206,170 @@ void test_repo_empty_name_rejected()
     clear_env();
     set_required_defaults();
     ::setenv("GITHUB_REPO", "owner/", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "owner/repo"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "owner/repo"));
 }
 
-// --- REVIEWER_ARGV JSON parsing ----------------------------------------
+// --- REVIEWER_KIND / model / effort / prompt ----------------------------
 
-void test_argv_not_an_array_rejected()
+void test_reviewer_kind_claude()
 {
     clear_env();
     set_required_defaults();
-    ::setenv("REVIEWER_ARGV", R"("claude")", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "missing opening bracket"));
+    ::setenv("REVIEWER_KIND", "claude", 1);
+    ::setenv("REVIEWER_MODEL", "claude-opus-4-7", 1);
+    ::setenv("REVIEWER_EFFORT", "xhigh", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.reviewer_kind, ReviewerKind::Claude);
+    EXPECT_EQ(c.reviewer_model, std::string("claude-opus-4-7"));
+    EXPECT_EQ(c.reviewer_effort, std::string("xhigh"));
 }
 
-void test_argv_empty_array_rejected()
+void test_reviewer_kind_codex_uppercase()
+{
+    // Kind parsing is case-insensitive.
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_KIND", "CODEX", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.reviewer_kind, ReviewerKind::Codex);
+}
+
+void test_reviewer_kind_invalid_rejected()
 {
     clear_env();
     set_required_defaults();
-    ::setenv("REVIEWER_ARGV", "[]", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "non-empty"));
+    ::setenv("REVIEWER_KIND", "gemini", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "REVIEWER_KIND"));
 }
 
-// --- numeric env parsing -----------------------------------------------
+void test_reviewer_prompt_literal()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_PROMPT", "review please", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.reviewer_prompt, std::string("review please"));
+}
+
+void test_reviewer_prompt_from_file()
+{
+    char path_buf[] = "/tmp/modmesh-bot-prompt-XXXXXX";
+    int fd = ::mkstemp(path_buf);
+    EXPECT(fd >= 0);
+    if (fd < 0) return;
+    const char body[] = "file-based prompt body\n";
+    (void)!::write(fd, body, sizeof(body) - 1);
+    ::close(fd);
+
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_PROMPT_FILE", path_buf, 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.reviewer_prompt, std::string(body));
+
+    ::unlink(path_buf);
+}
+
+void test_reviewer_prompt_and_prompt_file_mutually_exclusive()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_PROMPT", "literal", 1);
+    ::setenv("REVIEWER_PROMPT_FILE", "/nonexistent", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "mutually exclusive"));
+}
+
+void test_reviewer_prompt_file_missing()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_PROMPT_FILE", "/no/such/file-modmesh-bot-test", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "REVIEWER_PROMPT_FILE"));
+}
+
+void test_reviewer_prompt_file_too_large()
+{
+    // Build a 300 KB file; cap is 256 KB.
+    char path_buf[] = "/tmp/modmesh-bot-prompt-XXXXXX";
+    int fd = ::mkstemp(path_buf);
+    EXPECT(fd >= 0);
+    if (fd < 0) return;
+    const std::string blob(300 * 1024, 'A');
+    (void)!::write(fd, blob.data(), blob.size());
+    ::close(fd);
+
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_PROMPT_FILE", path_buf, 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "exceeds the"));
+
+    ::unlink(path_buf);
+}
+
+void test_reviewer_argv_rejected_with_migration_message()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_ARGV", R"(["/bin/cat"])", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
+                                  "REVIEWER_ARGV has been removed"));
+    ::unsetenv("REVIEWER_ARGV");
+}
+
+void test_reviewer_effort_invalid_chars_rejected()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_EFFORT", "high; rm -rf /", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "REVIEWER_EFFORT"));
+}
+
+void test_reviewer_effort_accepts_alphanumeric_dash()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_EFFORT", "xhigh-v2", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.reviewer_effort, std::string("xhigh-v2"));
+}
+
+// --- REVIEWER_MOCK_* ----------------------------------------------------
+
+void test_reviewer_mock_exit_code()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_KIND", "mock", 1);
+    ::setenv("REVIEWER_MOCK_EXIT_CODE", "17", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.reviewer_mock_exit_code, 17);
+}
+
+void test_reviewer_mock_exit_code_too_large_rejected()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_MOCK_EXIT_CODE", "256", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "REVIEWER_MOCK_EXIT_CODE"));
+}
+
+void test_reviewer_mock_output()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_MOCK_OUTPUT", "fixed review text", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.reviewer_mock_output, std::string("fixed review text"));
+}
+
+// --- numeric env parsing ------------------------------------------------
 
 void test_poll_interval_zero_rejected()
 {
     clear_env();
     set_required_defaults();
     ::setenv("POLL_INTERVAL_SEC", "0", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "POLL_INTERVAL_SEC"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "POLL_INTERVAL_SEC"));
 }
 
 void test_poll_interval_negative_rejected()
@@ -267,8 +377,7 @@ void test_poll_interval_negative_rejected()
     clear_env();
     set_required_defaults();
     ::setenv("POLL_INTERVAL_SEC", "-30", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "non-negative"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "non-negative"));
 }
 
 void test_poll_interval_trailing_garbage_rejected()
@@ -276,8 +385,7 @@ void test_poll_interval_trailing_garbage_rejected()
     clear_env();
     set_required_defaults();
     ::setenv("POLL_INTERVAL_SEC", "30s", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "trailing garbage"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "trailing garbage"));
 }
 
 void test_poll_interval_leading_garbage_rejected()
@@ -285,8 +393,7 @@ void test_poll_interval_leading_garbage_rejected()
     clear_env();
     set_required_defaults();
     ::setenv("POLL_INTERVAL_SEC", "x30", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "not an integer"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "not an integer"));
 }
 
 void test_max_diff_bytes_negative_rejected()
@@ -294,8 +401,7 @@ void test_max_diff_bytes_negative_rejected()
     clear_env();
     set_required_defaults();
     ::setenv("MAX_DIFF_BYTES", "-1", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "non-negative"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "non-negative"));
 }
 
 void test_max_diff_bytes_zero_rejected()
@@ -303,11 +409,18 @@ void test_max_diff_bytes_zero_rejected()
     clear_env();
     set_required_defaults();
     ::setenv("MAX_DIFF_BYTES", "0", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "MAX_DIFF_BYTES"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "MAX_DIFF_BYTES"));
 }
 
-// --- REVIEWER_ENV_PASSTHROUGH parsing ----------------------------------
+void test_poll_interval_too_large_rejected()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("POLL_INTERVAL_SEC", "100000", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "POLL_INTERVAL_SEC"));
+}
+
+// --- REVIEWER_ENV_PASSTHROUGH parsing -----------------------------------
 
 void test_reviewer_env_passthrough_default_empty()
 {
@@ -324,8 +437,7 @@ void test_reviewer_env_passthrough_csv()
     ::setenv("REVIEWER_ENV_PASSTHROUGH",
              "ANTHROPIC_API_KEY,OPENAI_API_KEY,SOME_OTHER", 1);
     Config c = Config::from_env();
-    EXPECT_EQ(c.reviewer_env_passthrough.size(),
-              static_cast<std::size_t>(3));
+    EXPECT_EQ(c.reviewer_env_passthrough.size(), static_cast<std::size_t>(3));
     EXPECT_EQ(c.reviewer_env_passthrough[0], std::string("ANTHROPIC_API_KEY"));
     EXPECT_EQ(c.reviewer_env_passthrough[1], std::string("OPENAI_API_KEY"));
     EXPECT_EQ(c.reviewer_env_passthrough[2], std::string("SOME_OTHER"));
@@ -338,8 +450,7 @@ void test_reviewer_env_passthrough_trims_whitespace()
     ::setenv("REVIEWER_ENV_PASSTHROUGH",
              "  ANTHROPIC_API_KEY  ,  OPENAI_API_KEY  ", 1);
     Config c = Config::from_env();
-    EXPECT_EQ(c.reviewer_env_passthrough.size(),
-              static_cast<std::size_t>(2));
+    EXPECT_EQ(c.reviewer_env_passthrough.size(), static_cast<std::size_t>(2));
     EXPECT_EQ(c.reviewer_env_passthrough[0], std::string("ANTHROPIC_API_KEY"));
     EXPECT_EQ(c.reviewer_env_passthrough[1], std::string("OPENAI_API_KEY"));
 }
@@ -350,33 +461,20 @@ void test_reviewer_env_passthrough_drops_empty_tokens()
     set_required_defaults();
     ::setenv("REVIEWER_ENV_PASSTHROUGH", ",,FOO,,", 1);
     Config c = Config::from_env();
-    EXPECT_EQ(c.reviewer_env_passthrough.size(),
-              static_cast<std::size_t>(1));
+    EXPECT_EQ(c.reviewer_env_passthrough.size(), static_cast<std::size_t>(1));
     EXPECT_EQ(c.reviewer_env_passthrough[0], std::string("FOO"));
-}
-
-void test_poll_interval_too_large_rejected()
-{
-    clear_env();
-    set_required_defaults();
-    // Larger than 86400 (one day) cap.
-    ::setenv("POLL_INTERVAL_SEC", "100000", 1);
-    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
-                                  "POLL_INTERVAL_SEC"));
 }
 
 } // namespace
 
 int main()
 {
-    test_required_only();
+    test_required_only_defaults_to_mock();
     test_overrides_applied();
-    test_reviewer_argv_single_element();
 
     test_missing_token();
     test_missing_repo();
     test_missing_bot_handle();
-    test_missing_reviewer_argv();
     test_empty_required_var_treated_as_missing();
 
     test_repo_no_slash_rejected();
@@ -384,8 +482,21 @@ int main()
     test_repo_empty_owner_rejected();
     test_repo_empty_name_rejected();
 
-    test_argv_not_an_array_rejected();
-    test_argv_empty_array_rejected();
+    test_reviewer_kind_claude();
+    test_reviewer_kind_codex_uppercase();
+    test_reviewer_kind_invalid_rejected();
+    test_reviewer_prompt_literal();
+    test_reviewer_prompt_from_file();
+    test_reviewer_prompt_and_prompt_file_mutually_exclusive();
+    test_reviewer_prompt_file_missing();
+    test_reviewer_prompt_file_too_large();
+    test_reviewer_argv_rejected_with_migration_message();
+    test_reviewer_effort_invalid_chars_rejected();
+    test_reviewer_effort_accepts_alphanumeric_dash();
+
+    test_reviewer_mock_exit_code();
+    test_reviewer_mock_exit_code_too_large_rejected();
+    test_reviewer_mock_output();
 
     test_poll_interval_zero_rejected();
     test_poll_interval_negative_rejected();

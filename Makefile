@@ -15,7 +15,8 @@
 #
 # .env at the repo root drives the e2e targets. See .env.example and
 # scripts/e2e_lib.sh for the variables. Pass-throughs:
-#   REVIEWER_ARGV=...        e.g. '["./scripts/reviewer-claude.sh"]'
+#   REVIEWER_KIND=claude     swap default mock for a real reviewer
+#   REVIEWER_EFFORT=high     bias claude/codex reasoning depth
 #   E2E_KEEP_ARTIFACTS=1     keep PR comments/approvals after a run
 #   E2E_TIMEOUT_SEC=N        wait longer for AI reviewers
 

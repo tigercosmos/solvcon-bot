@@ -87,8 +87,7 @@ before any `make e2e*` target. Useful overrides on the command line:
 
 ```bash
 # Run only one scenario with a real Claude reviewer:
-REVIEWER_ARGV='["./scripts/reviewer-claude.sh"]' \
-make e2e-ping
+REVIEWER_KIND=claude REVIEWER_EFFORT=high make e2e-ping
 
 # Keep mentions, replies, and approvals on the PR for manual inspection:
 E2E_KEEP_ARTIFACTS=1 make e2e
@@ -123,7 +122,13 @@ All configuration comes from environment variables. Required:
 | `GITHUB_TOKEN` | Personal access token. Classic needs `repo` (or `public_repo`) plus `read:org` for org repos. Fine-grained needs `pull-requests: write`, `contents: read`, `metadata: read`, and `members: read` for org repos. |
 | `GITHUB_REPO` | `owner/name`, e.g. `solvcon/modmesh`. |
 | `BOT_HANDLE` | The bot's GitHub username, without the `@`. |
-| `REVIEWER_ARGV` | JSON array, e.g. `["claude","-p"]`, `["codex","exec"]`, or `["./scripts/reviewer-claude.sh"]`. The first element is the executable; the rest are passed to `execvp`. No shell parsing — quote characters survive verbatim. The bot pipes the PR diff to the executable's stdin and captures its stdout as the review body. For a real code review prompt, use the wrapper script — `scripts/reviewer-claude.sh` prepends a review prompt before piping into `claude -p`. |
+| `REVIEWER_KIND` | One of `mock`, `claude`, `codex` (default `mock`). Selects the reviewer class — see "Reviewer kinds" below. Each kind spawns its own CLI; the bot prepends a built-in review prompt and pipes the diff to its stdin. |
+| `REVIEWER_MODEL` | Optional. Passed as `--model NAME` to `claude` / `codex`. Empty means the CLI's own default. |
+| `REVIEWER_EFFORT` | Optional. For claude, exported as `CLAUDE_EFFORT` in the child env. For codex, passed as `-c reasoning.effort=$EFFORT`. Values like `minimal`/`low`/`medium`/`high`/`xhigh`. |
+| `REVIEWER_PROMPT` | Optional literal prompt that replaces the built-in preamble. Mutually exclusive with `REVIEWER_PROMPT_FILE`. |
+| `REVIEWER_PROMPT_FILE` | Optional path whose contents replace the built-in preamble. |
+| `REVIEWER_MOCK_EXIT_CODE` | Mock-only. Non-zero forces the mock to write to stderr and exit with this code. Used by e2e-failure. |
+| `REVIEWER_MOCK_OUTPUT` | Mock-only. If set, the mock prints this instead of echoing the diff. |
 
 Optional:
 
@@ -140,13 +145,36 @@ Optional:
 | `REVIEWER_ENV_PASSTHROUGH` | empty | Comma-separated list of env-var names to pass through to the reviewer subprocess on top of the defaults (`PATH`/`HOME`/`LANG`/`TERM`/`USER`/`LOGNAME`). Use for AI credentials such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Not needed when the CLI authenticates via files in `$HOME` (codex's `~/.codex`, or claude after `claude /login` writes to the macOS keychain — keychain access already works with the default `USER` passthrough). |
 | `MODMESH_BOT_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. |
 
+## Reviewer kinds
+
+`REVIEWER_KIND` selects which subclass of `IReviewer` the factory
+builds. The selection is fixed at startup. All three kinds share the
+same subprocess plumbing — sanitized env, output cap, timeout — and
+differ only in which CLI they spawn and how they shape the prompt.
+
+| Kind | What it spawns | Used for |
+|---|---|---|
+| `mock` | `/bin/cat` (echoes the diff, no AI) or `/bin/sh -c 'exit N'` when `REVIEWER_MOCK_EXIT_CODE` is non-zero | Default. Deterministic and free; perfect for e2e of the bot pipeline without spending AI tokens. |
+| `claude` | `claude -p [--model $REVIEWER_MODEL]`, with `CLAUDE_EFFORT=$REVIEWER_EFFORT` injected into the child env when set | Real reviews via Anthropic Claude. The bot prepends a built-in review prompt to the diff and pipes the combined buffer to claude's stdin. |
+| `codex` | `codex exec [--model $REVIEWER_MODEL] [-c reasoning.effort=$REVIEWER_EFFORT]` | Real reviews via OpenAI Codex. Same prompt-then-diff stdin shape. |
+
+The built-in review prompt is in `default_review_prompt()` (`src/reviewer.cpp`).
+Override per-deployment with `REVIEWER_PROMPT` (literal) or
+`REVIEWER_PROMPT_FILE` (path; mutually exclusive with the literal).
+
+Auth lives in the CLI's home directory by default — codex uses
+`~/.codex`, claude uses the macOS keychain (which is why `USER` is in
+the sanitized env). If your reviewer needs an API key as an env var
+instead (e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`), add the name to
+`REVIEWER_ENV_PASSTHROUGH`.
+
 ## Run
 
 ```bash
 GITHUB_TOKEN=ghp_xxx \
 GITHUB_REPO=tigercosmos/modmesh \
 BOT_HANDLE=modmesh-bot \
-REVIEWER_ARGV='["claude","-p"]' \
+REVIEWER_KIND=claude REVIEWER_EFFORT=high \
 ./build/modmesh-bot
 ```
 
@@ -342,16 +370,18 @@ modmesh-bot/
 ├── src/
 │   ├── main.cpp                  daemon entry point
 │   ├── log.{hpp,cpp}             structured logging (UTC ISO-8601, levels, components)
-│   ├── config.{hpp,cpp}          env-var driven config (incl. REVIEWER_ARGV JSON)
+│   ├── config.{hpp,cpp}          env-var driven config (incl. REVIEWER_KIND enum)
 │   ├── state_store.{hpp,cpp}     flock'd, atomically rewritten JSON state
 │   ├── github_types.{hpp,cpp}    SerializableItem wrappers + small URL helpers
 │   ├── github_client.{hpp,cpp}   httplib-backed REST client (pagination, retries, streaming diff)
 │   ├── subprocess.{hpp,cpp}      fork+execvp with sanitized env, poll-driven IO, killpg on timeout
-│   ├── reviewer.{hpp,cpp}        thin Reviewer that runs cfg.reviewer_argv on a diff
+│   ├── reviewer.{hpp,cpp}        IReviewer abstract interface, factory, MockReviewer
+│   ├── reviewer_claude.cpp       ClaudeReviewer: spawns `claude -p`, injects CLAUDE_EFFORT
+│   ├── reviewer_codex.cpp        CodexReviewer: spawns `codex exec`, sets reasoning.effort
 │   ├── mention.{hpp,cpp}         @-mention matcher + case-insensitive login eq
 │   └── watcher.{hpp,cpp}         tick() running auto + ping paths against WatcherIo
 ├── tests/
-│   ├── test_config.cpp           env-var matrix, range validation, REVIEWER_ARGV
+│   ├── test_config.cpp           env-var matrix, range validation, REVIEWER_KIND parse
 │   ├── test_log.cpp              line shape, level, control-char sanitization
 │   ├── test_state_store.cpp      flock, atomic save, cursor semantics
 │   ├── test_github_types.cpp     JSON round-trip per type

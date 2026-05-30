@@ -2,56 +2,180 @@
 
 #include "subprocess.hpp"
 
+#include <memory>
 #include <sstream>
 #include <string>
 
 namespace modmesh_bot
 {
 
-std::string Reviewer::run(const std::string & diff) const
+// Forward declarations of factory helpers defined in the per-kind
+// translation units. The public factory below dispatches to one.
+std::unique_ptr<IReviewer> make_mock_reviewer(const Config & cfg);
+std::unique_ptr<IReviewer> make_claude_reviewer(const Config & cfg);
+std::unique_ptr<IReviewer> make_codex_reviewer(const Config & cfg);
+
+std::unique_ptr<IReviewer> make_reviewer(const Config & cfg)
 {
-    if (cfg_.reviewer_argv.empty())
+    switch (cfg.reviewer_kind)
     {
-        throw ReviewerError("reviewer_argv is empty");
+    case ReviewerKind::Mock:   return make_mock_reviewer(cfg);
+    case ReviewerKind::Claude: return make_claude_reviewer(cfg);
+    case ReviewerKind::Codex:  return make_codex_reviewer(cfg);
     }
-    const std::string & exe = cfg_.reviewer_argv.front();
+    throw std::runtime_error("unhandled ReviewerKind in make_reviewer");
+}
 
-    RunResult r;
-    try
+std::string default_review_prompt()
+{
+    return
+        "You are reviewing a GitHub pull request. The full diff is shown\n"
+        "below between BEGIN_DIFF and END_DIFF lines.\n"
+        "\n"
+        "Write a concise code review. Focus on:\n"
+        "- correctness or security bugs\n"
+        "- design or API issues that matter\n"
+        "- missing tests for new behavior\n"
+        "\n"
+        "Skip nits unless they hide a real problem. If the diff is fine\n"
+        "as-is, say so plainly in one sentence. Use Markdown. No emojis.";
+}
+
+std::string assemble_review_stdin(const std::string & prompt,
+                                  const std::string & diff)
+{
+    std::ostringstream oss;
+    oss << prompt << "\n\nBEGIN_DIFF\n" << diff;
+    if (!diff.empty() && diff.back() != '\n') oss << '\n';
+    oss << "END_DIFF\n";
+    return oss.str();
+}
+
+// Reviewers cap their stdout at MAX_OUTPUT_BYTES. When that fires the
+// posted comment would otherwise look like a complete review that
+// happens to end mid-sentence. Append a trailing notice so the PR
+// reader can tell the bot's output is truncated.
+std::string maybe_append_truncation_note(std::string body, bool truncated)
+{
+    if (!truncated) return body;
+    if (!body.empty() && body.back() != '\n') body += '\n';
+    body += "\n_modmesh-bot: reviewer output truncated at MAX_OUTPUT_BYTES._\n";
+    return body;
+}
+
+// -------------------------------------------------------------------
+// MockReviewer
+//
+// Spawns /bin/cat so the e2e subprocess path is exercised. With
+// REVIEWER_MOCK_OUTPUT set, prints that string instead of echoing the
+// diff. With REVIEWER_MOCK_EXIT_CODE non-zero, the spawn fails with
+// that code (used by the e2e-failure scenario).
+// -------------------------------------------------------------------
+
+namespace
+{
+
+class MockReviewer final : public IReviewer
+{
+public:
+    MockReviewer(int exit_code,
+                 std::string output,
+                 std::size_t max_output_bytes,
+                 int subprocess_timeout_sec,
+                 std::vector<std::string> env_passthrough)
+        : m_exit_code(exit_code)
+        , m_output(std::move(output))
+        , m_max_output_bytes(max_output_bytes)
+        , m_subprocess_timeout_sec(subprocess_timeout_sec)
+        , m_env_passthrough(std::move(env_passthrough))
     {
-        r = run_subprocess(
-            cfg_.reviewer_argv,
-            diff,
-            cfg_.max_output_bytes,
-            cfg_.subprocess_timeout_sec,
-            cfg_.reviewer_env_passthrough);
-    }
-    catch (const std::exception & e)
-    {
-        // Pipe/fork failure or other set-up error. Convert to the
-        // wrapper's contract type so callers don't need to know
-        // about std::system_error / std::runtime_error.
-        throw ReviewerError(std::string("reviewer setup failed: ") + e.what());
     }
 
-    if (r.timed_out)
+    ReviewerKind kind() const override { return ReviewerKind::Mock; }
+
+    std::string run(const std::string & diff) override
     {
-        std::ostringstream oss;
-        oss << "reviewer timed out after " << cfg_.subprocess_timeout_sec
-            << "s: " << exe
-            << "\nstderr (truncated=" << (r.stderr_truncated ? "yes" : "no")
-            << "):\n" << r.stderr_buf;
-        throw ReviewerError(oss.str());
+        // Build the argv + stdin we want the child to see. For the
+        // happy path (exit_code == 0, no override output), we use
+        // /bin/cat and pipe the diff through. For an override output,
+        // we pipe the override text instead of the diff. For forced
+        // failure, we use /bin/sh -c "..." that writes a deterministic
+        // stderr line and exits with the configured code.
+        std::vector<std::string> argv;
+        std::string stdin_payload;
+
+        if (m_exit_code != 0)
+        {
+            // Bake the exit code into the shell command. Avoids
+            // passing through env (which we don't want anyway) and
+            // makes the command self-contained.
+            std::ostringstream cmd;
+            cmd << "echo 'mock reviewer simulated failure' 1>&2; exit "
+                << m_exit_code;
+            argv = {"/bin/sh", "-c", cmd.str()};
+        }
+        else if (!m_output.empty())
+        {
+            // Pipe the configured override text through cat. cat is
+            // POSIX and present on every supported runner.
+            argv = {"/bin/cat"};
+            stdin_payload = m_output;
+        }
+        else
+        {
+            argv = {"/bin/cat"};
+            stdin_payload = diff;
+        }
+
+        RunResult r;
+        try
+        {
+            r = run_subprocess(argv,
+                               stdin_payload,
+                               m_max_output_bytes,
+                               m_subprocess_timeout_sec,
+                               m_env_passthrough);
+        }
+        catch (const std::exception & e)
+        {
+            throw ReviewerError(
+                std::string("mock reviewer setup failed: ") + e.what());
+        }
+
+        if (r.timed_out)
+        {
+            throw ReviewerError("mock reviewer timed out");
+        }
+        if (r.exit_status != 0)
+        {
+            std::ostringstream oss;
+            oss << "mock reviewer exited " << r.exit_status
+                << "\nstderr (truncated=" << (r.stderr_truncated ? "yes" : "no")
+                << "):\n" << r.stderr_buf;
+            throw ReviewerError(oss.str());
+        }
+        return maybe_append_truncation_note(
+            std::move(r.stdout_buf), r.stdout_truncated);
     }
-    if (r.exit_status != 0)
-    {
-        std::ostringstream oss;
-        oss << "reviewer exited " << r.exit_status << ": " << exe
-            << "\nstderr (truncated=" << (r.stderr_truncated ? "yes" : "no")
-            << "):\n" << r.stderr_buf;
-        throw ReviewerError(oss.str());
-    }
-    return r.stdout_buf;
+
+private:
+    int m_exit_code;
+    std::string m_output;
+    std::size_t m_max_output_bytes;
+    int m_subprocess_timeout_sec;
+    std::vector<std::string> m_env_passthrough;
+};
+
+} // namespace
+
+std::unique_ptr<IReviewer> make_mock_reviewer(const Config & cfg)
+{
+    return std::make_unique<MockReviewer>(
+        cfg.reviewer_mock_exit_code,
+        cfg.reviewer_mock_output,
+        cfg.max_output_bytes,
+        cfg.subprocess_timeout_sec,
+        cfg.reviewer_env_passthrough);
 }
 
 } // namespace modmesh_bot

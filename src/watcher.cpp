@@ -73,7 +73,7 @@ bool body_has_marker_key(const std::string & body, const std::string & key)
 
 // --- LiveWatcherIo --------------------------------------------------------
 
-LiveWatcherIo::LiveWatcherIo(GithubClient & gh, Reviewer & rv, StateStore & state)
+LiveWatcherIo::LiveWatcherIo(GithubClient & gh, IReviewer & rv, StateStore & state)
     : gh_(gh), rv_(rv), state_(state) {}
 
 std::vector<PrSummary> LiveWatcherIo::list_open_prs() { return gh_.list_open_prs(); }

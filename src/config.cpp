@@ -1,11 +1,11 @@
 #include "config.hpp"
 
-#include <modmesh/serialization/SerializableItem.hpp>
-
 #include <cctype>
 #include <charconv>
 #include <cstdlib>
+#include <fstream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -93,19 +93,6 @@ std::size_t env_size_or(const char * name, std::size_t fallback,
     return parse_nonneg<std::size_t>(name, v, min_value, max_value);
 }
 
-std::vector<std::string> parse_argv_json(const std::string & json)
-{
-    auto node = std::make_unique<modmesh::detail::JsonNode>(
-        modmesh::detail::JsonType::Array, json);
-    std::vector<std::string> argv;
-    modmesh::detail::JsonHelper::from_json_string(node, argv);
-    if (argv.empty())
-    {
-        throw std::runtime_error("REVIEWER_ARGV must be a non-empty JSON array");
-    }
-    return argv;
-}
-
 // Split a comma-separated, optionally-whitespace-padded list of names
 // into a vector. Empty tokens are dropped.
 std::vector<std::string> parse_csv_names(const std::string & raw)
@@ -141,7 +128,94 @@ std::pair<std::string, std::string> split_owner_repo(const std::string & repo)
     return {repo.substr(0, slash), repo.substr(slash + 1)};
 }
 
+std::string lc(const std::string & s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s)
+    {
+        out.push_back(
+            (c >= 'A' && c <= 'Z') ? static_cast<char>(c + ('a' - 'A')) : c);
+    }
+    return out;
+}
+
+// Read a text file at `path` into a string, refusing inputs larger
+// than `max_bytes` so a misconfigured REVIEWER_PROMPT_FILE pointed at
+// /dev/zero or a huge log can't OOM the bot at startup.
+std::string read_text_file(const std::string & path, std::size_t max_bytes)
+{
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs)
+    {
+        throw std::runtime_error(
+            "REVIEWER_PROMPT_FILE could not be opened: " + path);
+    }
+    std::string out;
+    out.reserve(4096);
+    char buf[4096];
+    while (ifs.read(buf, sizeof(buf)) || ifs.gcount() > 0)
+    {
+        const std::streamsize n = ifs.gcount();
+        if (out.size() + static_cast<std::size_t>(n) > max_bytes)
+        {
+            throw std::runtime_error(
+                "REVIEWER_PROMPT_FILE exceeds the " + std::to_string(max_bytes)
+                + "-byte cap: " + path);
+        }
+        out.append(buf, static_cast<std::size_t>(n));
+    }
+    return out;
+}
+
+// Reviewer effort flows into argv (`-c reasoning.effort=$EFFORT` for
+// codex) and into an env var (`CLAUDE_EFFORT` for claude). Both
+// channels reject only what looks suspicious — letters-and-dashes
+// only, max 32 chars. Bot operator typo: clearer fail-loud than a
+// confusing AI-side error or env-injection.
+void validate_reviewer_effort(const std::string & v)
+{
+    if (v.empty()) return;
+    if (v.size() > 32)
+    {
+        throw std::runtime_error(
+            "REVIEWER_EFFORT exceeds 32 chars: " + v);
+    }
+    for (char c : v)
+    {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                        || (c >= '0' && c <= '9') || c == '-' || c == '_';
+        if (!ok)
+        {
+            throw std::runtime_error(
+                std::string("REVIEWER_EFFORT contains an invalid character "
+                            "(only [A-Za-z0-9_-] allowed): ") + v);
+        }
+    }
+}
+
 } // namespace
+
+ReviewerKind parse_reviewer_kind(const std::string & s)
+{
+    const std::string n = lc(s);
+    if (n == "mock") return ReviewerKind::Mock;
+    if (n == "claude") return ReviewerKind::Claude;
+    if (n == "codex") return ReviewerKind::Codex;
+    throw std::runtime_error(
+        std::string("REVIEWER_KIND must be one of mock|claude|codex; got: ") + s);
+}
+
+const char * to_string(ReviewerKind k)
+{
+    switch (k)
+    {
+    case ReviewerKind::Mock:   return "mock";
+    case ReviewerKind::Claude: return "claude";
+    case ReviewerKind::Codex:  return "codex";
+    }
+    return "?";
+}
 
 Config Config::from_env()
 {
@@ -151,7 +225,60 @@ Config Config::from_env()
     cfg.github_owner = std::move(owner);
     cfg.github_repo = std::move(repo);
     cfg.bot_handle = require_env("BOT_HANDLE");
-    cfg.reviewer_argv = parse_argv_json(require_env("REVIEWER_ARGV"));
+
+    // Fail-loud if a stale `REVIEWER_ARGV` is carried over from the
+    // pre-redesign config. Silently ignoring it would mean the bot
+    // defaults to REVIEWER_KIND=mock and posts diff-echo "reviews"
+    // until the operator notices.
+    if (const char * v = std::getenv("REVIEWER_ARGV"); v != nullptr && *v != '\0')
+    {
+        throw std::runtime_error(
+            "REVIEWER_ARGV has been removed; set REVIEWER_KIND=mock|claude|codex "
+            "(plus REVIEWER_MODEL / REVIEWER_EFFORT / REVIEWER_PROMPT as needed). "
+            "See .env.example.");
+    }
+
+    // Reviewer block.
+    cfg.reviewer_kind = parse_reviewer_kind(
+        env_or("REVIEWER_KIND", "mock"));
+    cfg.reviewer_model = env_or("REVIEWER_MODEL", "");
+    cfg.reviewer_effort = env_or("REVIEWER_EFFORT", "");
+    validate_reviewer_effort(cfg.reviewer_effort);
+
+    // Prompt: REVIEWER_PROMPT is a literal string; REVIEWER_PROMPT_FILE
+    // points at a path whose contents we read. The two are mutually
+    // exclusive; an empty value means "use the built-in default in the
+    // reviewer class".
+    {
+        const std::string p = env_or("REVIEWER_PROMPT", "");
+        const std::string pf = env_or("REVIEWER_PROMPT_FILE", "");
+        if (!p.empty() && !pf.empty())
+        {
+            throw std::runtime_error(
+                "REVIEWER_PROMPT and REVIEWER_PROMPT_FILE are mutually exclusive");
+        }
+        // Cap prompt file size at 256 KB — large enough for any
+        // realistic operator-authored review prompt, small enough
+        // that a misconfigured file (/dev/zero, a multi-GB log)
+        // can't OOM startup.
+        constexpr std::size_t kPromptFileMax = 256 * 1024;
+        if (!p.empty()) cfg.reviewer_prompt = p;
+        else if (!pf.empty())
+            cfg.reviewer_prompt = read_text_file(pf, kPromptFileMax);
+    }
+
+    // Mock knobs. Defaults are inert.
+    {
+        const std::string v = env_or("REVIEWER_MOCK_EXIT_CODE", "");
+        if (!v.empty())
+        {
+            // Mock failure can legitimately be negative-ish (signaled),
+            // but we accept 0..255 (POSIX exit code range).
+            cfg.reviewer_mock_exit_code = parse_nonneg<int>(
+                "REVIEWER_MOCK_EXIT_CODE", v.c_str(), 0, 255);
+        }
+    }
+    cfg.reviewer_mock_output = env_or("REVIEWER_MOCK_OUTPUT", "");
 
     constexpr int kIntMax = std::numeric_limits<int>::max();
     constexpr std::size_t kSizeMax = std::numeric_limits<std::size_t>::max();

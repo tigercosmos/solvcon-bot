@@ -55,8 +55,10 @@ int main()
         modmesh_bot::log_info("main", "state file locked: " + cfg.state_file);
 
         modmesh_bot::GithubClient gh(cfg);
-        modmesh_bot::Reviewer rv(cfg);
-        modmesh_bot::LiveWatcherIo io(gh, rv, state);
+        auto rv = modmesh_bot::make_reviewer(cfg);
+        modmesh_bot::log_info("main",
+            std::string("reviewer kind=") + modmesh_bot::to_string(cfg.reviewer_kind));
+        modmesh_bot::LiveWatcherIo io(gh, *rv, state);
         modmesh_bot::Watcher watcher(cfg, io);
 
         install_signal_handlers();

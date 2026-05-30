@@ -7,7 +7,12 @@
 #                                   collaborator, check PR is open.
 #                                   Sets globals: GITHUB_REPO,
 #                                   BOT_HANDLE, BOT_PAT, TEST_PR_NUMBER,
-#                                   STATE_FILE, REVIEWER_ARGV,
+#                                   STATE_FILE, REVIEWER_KIND,
+#                                   REVIEWER_MODEL, REVIEWER_EFFORT,
+#                                   REVIEWER_PROMPT, REVIEWER_PROMPT_FILE,
+#                                   REVIEWER_MOCK_EXIT_CODE,
+#                                   REVIEWER_MOCK_OUTPUT,
+#                                   REVIEWER_ENV_PASSTHROUGH,
 #                                   USER_LOGIN, NONCE, BIN, BOT_LOG.
 #
 #   e2e_post_mention BODY        -- post BODY as a comment from the
@@ -58,26 +63,38 @@ e2e_load_env() {
         exit 2
     fi
 
-    # Allow caller-set vars to win over .env. Same set as e2e_ping.sh's
-    # original override list, kept in sync.
-    __pre_REVIEWER_ARGV="${REVIEWER_ARGV:-}"
+    # Allow caller-set vars to win over .env. Same set as the
+    # bot-side env, plus a few script-level knobs.
+    __pre_REVIEWER_KIND="${REVIEWER_KIND:-}"
+    __pre_REVIEWER_MODEL="${REVIEWER_MODEL:-}"
+    __pre_REVIEWER_EFFORT="${REVIEWER_EFFORT:-}"
+    __pre_REVIEWER_PROMPT="${REVIEWER_PROMPT:-}"
+    __pre_REVIEWER_PROMPT_FILE="${REVIEWER_PROMPT_FILE:-}"
+    __pre_REVIEWER_MOCK_EXIT_CODE="${REVIEWER_MOCK_EXIT_CODE:-}"
+    __pre_REVIEWER_MOCK_OUTPUT="${REVIEWER_MOCK_OUTPUT:-}"
+    __pre_REVIEWER_ENV_PASSTHROUGH="${REVIEWER_ENV_PASSTHROUGH:-}"
     __pre_E2E_TIMEOUT_SEC="${E2E_TIMEOUT_SEC:-}"
     __pre_POLL_INTERVAL_SEC="${POLL_INTERVAL_SEC:-}"
     __pre_SUBPROCESS_TIMEOUT_SEC="${SUBPROCESS_TIMEOUT_SEC:-}"
     __pre_MAX_DIFF_BYTES="${MAX_DIFF_BYTES:-}"
     __pre_TEST_PR_NUMBER="${TEST_PR_NUMBER:-}"
-    __pre_REVIEWER_ENV_PASSTHROUGH="${REVIEWER_ENV_PASSTHROUGH:-}"
 
     # shellcheck disable=SC1090
     set -a; source "$env_file"; set +a
 
-    [[ -n "$__pre_REVIEWER_ARGV" ]] && REVIEWER_ARGV="$__pre_REVIEWER_ARGV"
+    [[ -n "$__pre_REVIEWER_KIND" ]] && REVIEWER_KIND="$__pre_REVIEWER_KIND"
+    [[ -n "$__pre_REVIEWER_MODEL" ]] && REVIEWER_MODEL="$__pre_REVIEWER_MODEL"
+    [[ -n "$__pre_REVIEWER_EFFORT" ]] && REVIEWER_EFFORT="$__pre_REVIEWER_EFFORT"
+    [[ -n "$__pre_REVIEWER_PROMPT" ]] && REVIEWER_PROMPT="$__pre_REVIEWER_PROMPT"
+    [[ -n "$__pre_REVIEWER_PROMPT_FILE" ]] && REVIEWER_PROMPT_FILE="$__pre_REVIEWER_PROMPT_FILE"
+    [[ -n "$__pre_REVIEWER_MOCK_EXIT_CODE" ]] && REVIEWER_MOCK_EXIT_CODE="$__pre_REVIEWER_MOCK_EXIT_CODE"
+    [[ -n "$__pre_REVIEWER_MOCK_OUTPUT" ]] && REVIEWER_MOCK_OUTPUT="$__pre_REVIEWER_MOCK_OUTPUT"
+    [[ -n "$__pre_REVIEWER_ENV_PASSTHROUGH" ]] && REVIEWER_ENV_PASSTHROUGH="$__pre_REVIEWER_ENV_PASSTHROUGH"
     [[ -n "$__pre_E2E_TIMEOUT_SEC" ]] && E2E_TIMEOUT_SEC="$__pre_E2E_TIMEOUT_SEC"
     [[ -n "$__pre_POLL_INTERVAL_SEC" ]] && POLL_INTERVAL_SEC="$__pre_POLL_INTERVAL_SEC"
     [[ -n "$__pre_SUBPROCESS_TIMEOUT_SEC" ]] && SUBPROCESS_TIMEOUT_SEC="$__pre_SUBPROCESS_TIMEOUT_SEC"
     [[ -n "$__pre_MAX_DIFF_BYTES" ]] && MAX_DIFF_BYTES="$__pre_MAX_DIFF_BYTES"
     [[ -n "$__pre_TEST_PR_NUMBER" ]] && TEST_PR_NUMBER="$__pre_TEST_PR_NUMBER"
-    [[ -n "$__pre_REVIEWER_ENV_PASSTHROUGH" ]] && REVIEWER_ENV_PASSTHROUGH="$__pre_REVIEWER_ENV_PASSTHROUGH"
     # Final-statement matters: if the last `[[ ... ]] &&` chain evaluated
     # false, the function would return 1, which `set -e` then turns
     # into a script exit. Ensure success explicitly.
@@ -91,7 +108,7 @@ e2e_setup() {
     e2e_require BOT_HANDLE
     e2e_require BOT_PAT
     e2e_require TEST_PR_NUMBER
-    e2e_require REVIEWER_ARGV
+    : "${REVIEWER_KIND:=mock}"
     : "${STATE_FILE:=/tmp/modmesh-bot-e2e.state}"
 
     BIN="${BIN:-./build/modmesh-bot}"
@@ -162,11 +179,19 @@ e2e_post_mention() {
 e2e_start_bot() {
     rm -f "$STATE_FILE" "$STATE_FILE.tmp" "$STATE_FILE.lock"
     echo "==> starting modmesh-bot ($BIN)"
-    echo "    REVIEWER_ARGV: $REVIEWER_ARGV"
+    echo "    REVIEWER_KIND: $REVIEWER_KIND"
+    [[ -n "${REVIEWER_MODEL:-}" ]] && echo "    REVIEWER_MODEL: $REVIEWER_MODEL"
+    [[ -n "${REVIEWER_EFFORT:-}" ]] && echo "    REVIEWER_EFFORT: $REVIEWER_EFFORT"
     GITHUB_TOKEN="$BOT_PAT" \
     GITHUB_REPO="$GITHUB_REPO" \
     BOT_HANDLE="$BOT_HANDLE" \
-    REVIEWER_ARGV="$REVIEWER_ARGV" \
+    REVIEWER_KIND="$REVIEWER_KIND" \
+    REVIEWER_MODEL="${REVIEWER_MODEL:-}" \
+    REVIEWER_EFFORT="${REVIEWER_EFFORT:-}" \
+    REVIEWER_PROMPT="${REVIEWER_PROMPT:-}" \
+    REVIEWER_PROMPT_FILE="${REVIEWER_PROMPT_FILE:-}" \
+    REVIEWER_MOCK_EXIT_CODE="${REVIEWER_MOCK_EXIT_CODE:-}" \
+    REVIEWER_MOCK_OUTPUT="${REVIEWER_MOCK_OUTPUT:-}" \
     REVIEWER_ENV_PASSTHROUGH="${REVIEWER_ENV_PASSTHROUGH:-}" \
     POLL_INTERVAL_SEC="${POLL_INTERVAL_SEC:-5}" \
     SUBPROCESS_TIMEOUT_SEC="${SUBPROCESS_TIMEOUT_SEC:-300}" \

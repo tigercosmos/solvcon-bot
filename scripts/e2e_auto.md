@@ -8,7 +8,7 @@ single shell.
 ## Prereqs (one-time)
 
 1. `.env` at the repo root, filled in from `.env.example` (just the
-   bot side: `BOT_HANDLE`, `BOT_PAT`, `GITHUB_REPO`, `REVIEWER_ARGV`,
+   bot side: `BOT_HANDLE`, `BOT_PAT`, `GITHUB_REPO`, `REVIEWER_KIND`,
    `STATE_FILE`). No user-side token is needed — gh handles your auth.
 2. `gh auth login --hostname github.com` once on your machine, signed
    in as the user who will leave the approving review.
@@ -29,7 +29,14 @@ rm -f "$state" "$state.tmp" "$state.lock"
 GITHUB_TOKEN="$BOT_PAT" \
 GITHUB_REPO="$GITHUB_REPO" \
 BOT_HANDLE="$BOT_HANDLE" \
-REVIEWER_ARGV="$REVIEWER_ARGV" \
+REVIEWER_KIND="${REVIEWER_KIND:-mock}" \
+REVIEWER_MODEL="${REVIEWER_MODEL:-}" \
+REVIEWER_EFFORT="${REVIEWER_EFFORT:-}" \
+REVIEWER_PROMPT="${REVIEWER_PROMPT:-}" \
+REVIEWER_PROMPT_FILE="${REVIEWER_PROMPT_FILE:-}" \
+REVIEWER_MOCK_EXIT_CODE="${REVIEWER_MOCK_EXIT_CODE:-}" \
+REVIEWER_MOCK_OUTPUT="${REVIEWER_MOCK_OUTPUT:-}" \
+REVIEWER_ENV_PASSTHROUGH="${REVIEWER_ENV_PASSTHROUGH:-}" \
 POLL_INTERVAL_SEC=10 \
 STATE_FILE="$state" \
 MODMESH_BOT_LOG_LEVEL=info \
