@@ -10,7 +10,7 @@ source "$(dirname "$0")/e2e_lib.sh"
 
 e2e_setup "${1:-.env}"
 
-MENTION_BODY="modmesh-bot e2e ping $NONCE — @${BOT_HANDLE} please review"
+MENTION_BODY="@${BOT_HANDLE} review"
 e2e_post_mention "$MENTION_BODY"
 
 cleanup() {

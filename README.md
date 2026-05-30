@@ -66,7 +66,7 @@ All configuration comes from environment variables. Required:
 | `GITHUB_TOKEN` | Personal access token. Classic needs `repo` (or `public_repo`) plus `read:org` for org repos. Fine-grained needs `pull-requests: write`, `contents: read`, `metadata: read`, and `members: read` for org repos. |
 | `GITHUB_REPO` | `owner/name`, e.g. `solvcon/modmesh`. |
 | `BOT_HANDLE` | The bot's GitHub username, without the `@`. |
-| `REVIEWER_ARGV` | JSON array, e.g. `["claude","-p"]` or `["codex","exec"]`. The first element is the executable; the rest are passed to `execvp`. No shell parsing — quote characters survive verbatim. |
+| `REVIEWER_ARGV` | JSON array, e.g. `["claude","-p"]`, `["codex","exec"]`, or `["./scripts/reviewer-claude.sh"]`. The first element is the executable; the rest are passed to `execvp`. No shell parsing — quote characters survive verbatim. The bot pipes the PR diff to the executable's stdin and captures its stdout as the review body. For a real code review prompt, use the wrapper script — `scripts/reviewer-claude.sh` prepends a review prompt before piping into `claude -p`. |
 
 Optional:
 
