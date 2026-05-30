@@ -1,5 +1,19 @@
 # Known Issues / Tech Debt
 
+## Status
+
+The two modmesh JSON-parser bugs below are patched locally in
+`patches/modmesh-serializer-edge-cases.patch`, applied to
+`third_party/modmesh`'s working tree by
+`scripts/apply_modmesh_patches.sh`. CI (`.github/workflows/ci.yml`)
+runs the script before building; a fresh local clone needs to run it
+once. The submodule pointer is unchanged (still at `solvcon/modmesh`
+`e05d29f`).
+
+The patches are not upstream yet. Once an upstream PR lands and the
+submodule SHA is bumped, the patch file and the apply script can be
+deleted.
+
 ## 1. modmesh JSON parser rejects empty arrays and empty objects
 
 **Where:** `third_party/modmesh/cpp/modmesh/serialization/SerializableItem.cpp`
@@ -56,11 +70,18 @@ have it.
 **Resolution plan.**
 1. Upstream the fix to `solvcon/modmesh` as its own PR with unit tests
    covering `[]`, `{}`, nested `{"a":[]}`, `{"a":{}}`, and trailing
-   commas (the patch currently also tolerates `[1,2,]` / `{"k":1,}`;
-   confirm whether that's desired or whether trailing commas should
-   stay rejected).
+   commas.
 2. Once merged, bump `third_party/modmesh` to the new SHA and drop the
    note about the workaround from `plan.md`.
+
+**Caveat (over-permissive).** The current patch also accepts
+trailing-comma inputs like `[1,2,]` and `{"k":1,}` because the
+empty-container early-out (`if (c == ']') state = End`) fires both at
+"just opened the bracket" and at "just consumed a comma". A
+strict-JSON variant would need an extra flag to distinguish those two
+states. We accept the looser behavior for now because GitHub's API
+never emits trailing commas, so the laxness is unreachable in
+practice; the upstream PR may choose to tighten this.
 
 **Tracking.** Replace this entry with a link to the upstream PR/issue
 once filed.

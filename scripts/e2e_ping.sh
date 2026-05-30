@@ -1,253 +1,50 @@
 #!/usr/bin/env bash
 #
 # End-to-end ping-path smoke for modmesh-bot against a real GitHub repo.
-#
-# Two identities are exercised:
-#   - the BOT, configured via $BOT_PAT in .env; runs the modmesh-bot
-#     binary, posts the AI review back.
-#   - YOU, the human running the test, authenticated via `gh auth
-#     login`; leaves the @-mention that triggers the bot, and does
-#     all read/cleanup against the GitHub API.
-#
-# Flow:
-#   1. Validate env + that the binary exists + that gh is authed.
-#   2. Confirm the bot is a collaborator on $GITHUB_REPO and that
-#      $TEST_PR_NUMBER is open.
-#   3. Start fresh: remove any prior state file + lock.
-#   4. As you (gh), leave a uniquely-nonced @$BOT_HANDLE comment on
-#      the PR.
-#   5. Start modmesh-bot in the background with $BOT_PAT.
-#   6. Poll the PR's comments (gh) for a bot post whose body contains
-#      the version-agnostic marker key for our trigger comment id.
-#   7. SIGTERM the bot, verify the marker + author of the reply.
-#   8. Cleanup: delete both the test mention and the bot's reply.
-#
-# Re-runnable. Each invocation uses a fresh nonce so previous runs
-# do not interfere.
+# Posts a uniquely-nonced @<bot> mention as the gh-authed user, starts
+# the bot, polls for the bot's marker-tagged reply, and cleans up both
+# comments on exit.
 
-set -euo pipefail
+# shellcheck source=scripts/e2e_lib.sh
+source "$(dirname "$0")/e2e_lib.sh"
 
-ENV_FILE="${1:-.env}"
-if [[ ! -f "$ENV_FILE" ]]; then
-    echo "fatal: env file '$ENV_FILE' not found." >&2
-    echo "  copy .env.example to .env and fill in." >&2
-    exit 2
-fi
+e2e_setup "${1:-.env}"
 
-# Pre-existing env vars (passed in on the command line) take priority
-# over the values in .env, so a caller can do e.g.
-#   REVIEWER_ARGV='["claude","-p"]' ./scripts/e2e_ping.sh
-# without editing the file. We save the pre-source values for a small
-# allow-list and restore them after sourcing.
-__pre_REVIEWER_ARGV="${REVIEWER_ARGV:-}"
-__pre_E2E_TIMEOUT_SEC="${E2E_TIMEOUT_SEC:-}"
-__pre_POLL_INTERVAL_SEC="${POLL_INTERVAL_SEC:-}"
-__pre_SUBPROCESS_TIMEOUT_SEC="${SUBPROCESS_TIMEOUT_SEC:-}"
-__pre_MAX_DIFF_BYTES="${MAX_DIFF_BYTES:-}"
-__pre_TEST_PR_NUMBER="${TEST_PR_NUMBER:-}"
-
-# shellcheck disable=SC1090
-set -a; source "$ENV_FILE"; set +a
-
-[[ -n "$__pre_REVIEWER_ARGV" ]] && REVIEWER_ARGV="$__pre_REVIEWER_ARGV"
-[[ -n "$__pre_E2E_TIMEOUT_SEC" ]] && E2E_TIMEOUT_SEC="$__pre_E2E_TIMEOUT_SEC"
-[[ -n "$__pre_POLL_INTERVAL_SEC" ]] && POLL_INTERVAL_SEC="$__pre_POLL_INTERVAL_SEC"
-[[ -n "$__pre_SUBPROCESS_TIMEOUT_SEC" ]] && SUBPROCESS_TIMEOUT_SEC="$__pre_SUBPROCESS_TIMEOUT_SEC"
-[[ -n "$__pre_MAX_DIFF_BYTES" ]] && MAX_DIFF_BYTES="$__pre_MAX_DIFF_BYTES"
-[[ -n "$__pre_TEST_PR_NUMBER" ]] && TEST_PR_NUMBER="$__pre_TEST_PR_NUMBER"
-
-# --- sanity ---------------------------------------------------------------
-
-require() {
-    local n="$1"
-    if [[ -z "${!n:-}" ]]; then
-        echo "fatal: $n is unset in $ENV_FILE" >&2
-        exit 2
-    fi
-}
-require GITHUB_REPO
-require BOT_HANDLE
-require BOT_PAT
-require TEST_PR_NUMBER
-require REVIEWER_ARGV
-: "${STATE_FILE:=/tmp/modmesh-bot-e2e.state}"
-
-BIN="${BIN:-./build/modmesh-bot}"
-if [[ ! -x "$BIN" ]]; then
-    echo "fatal: $BIN not found or not executable" >&2
-    echo "  build first: cmake --build build" >&2
-    exit 2
-fi
-
-for cmd in gh jq curl; do
-    if ! command -v "$cmd" >/dev/null; then
-        echo "fatal: $cmd is required but not on PATH" >&2
-        exit 2
-    fi
-done
-
-if ! gh auth status -h github.com >/dev/null 2>&1; then
-    echo "fatal: gh is not authenticated to github.com." >&2
-    echo "  run: gh auth login --hostname github.com" >&2
-    exit 2
-fi
-
-USER_LOGIN=$(gh api user --jq '.login')
-echo "==> gh authed as: $USER_LOGIN"
-
-# bash 3.2 (default on macOS) lacks ${var,,}; use tr for portability.
-lc() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
-
-if [[ "$(lc "$USER_LOGIN")" == "$(lc "$BOT_HANDLE")" ]]; then
-    echo "fatal: gh is authed as the bot ($BOT_HANDLE)." >&2
-    echo "  The mentioner must be a DIFFERENT collaborator." >&2
-    exit 2
-fi
-
-NONCE="$(date +%s)-$$"
-echo "==> e2e nonce: $NONCE"
-
-# --- 0. preflight ---------------------------------------------------------
-
-echo "==> verifying bot ($BOT_HANDLE) is a collaborator on $GITHUB_REPO"
-if ! gh api "repos/$GITHUB_REPO/collaborators/$BOT_HANDLE" --silent 2>/dev/null
-then
-    echo "fatal: $BOT_HANDLE is NOT a collaborator on $GITHUB_REPO." >&2
-    echo "  invite the bot account first." >&2
-    exit 1
-fi
-
-echo "==> verifying PR #$TEST_PR_NUMBER is open"
-pr_state=$(gh api "repos/$GITHUB_REPO/issues/$TEST_PR_NUMBER" \
-    --jq '.state // "missing"' 2>/dev/null || echo missing)
-if [[ "$pr_state" != "open" ]]; then
-    echo "fatal: PR #$TEST_PR_NUMBER is in state '$pr_state' (need open)" >&2
-    exit 1
-fi
-
-# --- 1. leave the @-mention comment as YOU --------------------------------
-
-mention_body="modmesh-bot e2e ping $NONCE — @${BOT_HANDLE} please review"
-echo "==> posting mention as $USER_LOGIN: $mention_body"
-mention_id=$(gh api "repos/$GITHUB_REPO/issues/$TEST_PR_NUMBER/comments" \
-    --method POST \
-    -f body="$mention_body" \
-    --jq '.id')
-if [[ -z "$mention_id" ]]; then
-    echo "fatal: could not post mention" >&2
-    exit 1
-fi
-echo "==> mention id: $mention_id"
+MENTION_BODY="modmesh-bot e2e ping $NONCE — @${BOT_HANDLE} please review"
+e2e_post_mention "$MENTION_BODY"
 
 cleanup() {
     set +e
-    if [[ -n "${BOT_PID:-}" ]] && kill -0 "$BOT_PID" 2>/dev/null; then
-        echo "==> stopping bot (pid $BOT_PID)"
-        kill -TERM "$BOT_PID" 2>/dev/null
-        wait "$BOT_PID" 2>/dev/null
-    fi
-    if [[ -n "${mention_id:-}" ]]; then
-        echo "==> deleting mention id $mention_id"
-        gh api "repos/$GITHUB_REPO/issues/comments/$mention_id" \
-            --method DELETE --silent >/dev/null 2>&1
-    fi
-    if [[ -n "${bot_reply_id:-}" ]]; then
-        echo "==> deleting bot reply id $bot_reply_id (using BOT_PAT — the bot owns the comment)"
-        # gh CLI doesn't let us override the token per-call without
-        # mutating the global login, so use curl + BOT_PAT for this
-        # one delete. Users without admin/maintainer on the repo
-        # would otherwise leave the bot's comment behind silently.
-        curl -sS -o /dev/null -w 'bot-delete: HTTP %{http_code}\n' \
-            -X DELETE \
-            -H "Authorization: Bearer $BOT_PAT" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "User-Agent: modmesh-bot-e2e" \
-            "https://api.github.com/repos/$GITHUB_REPO/issues/comments/$bot_reply_id" \
-            || true
-    fi
-    rm -f "$STATE_FILE" "$STATE_FILE.tmp" "$STATE_FILE.lock"
+    e2e_stop_bot
+    e2e_user_delete_comment "${MENTION_ID:-}"
+    e2e_bot_delete_comment "${BOT_REPLY_ID:-}"
     set -e
 }
 trap cleanup EXIT
 
-# --- 2. clean state -------------------------------------------------------
+e2e_start_bot
 
-rm -f "$STATE_FILE" "$STATE_FILE.tmp" "$STATE_FILE.lock"
-
-# --- 3. start the bot -----------------------------------------------------
-
-BOT_LOG=/tmp/modmesh-bot-e2e.log
-rm -f "$BOT_LOG"
-
-echo "==> starting modmesh-bot ($BIN)"
-echo "    REVIEWER_ARGV: $REVIEWER_ARGV"
-GITHUB_TOKEN="$BOT_PAT" \
-GITHUB_REPO="$GITHUB_REPO" \
-BOT_HANDLE="$BOT_HANDLE" \
-REVIEWER_ARGV="$REVIEWER_ARGV" \
-POLL_INTERVAL_SEC="${POLL_INTERVAL_SEC:-5}" \
-SUBPROCESS_TIMEOUT_SEC="${SUBPROCESS_TIMEOUT_SEC:-300}" \
-MAX_DIFF_BYTES="${MAX_DIFF_BYTES:-200000}" \
-STATE_FILE="$STATE_FILE" \
-MODMESH_BOT_LOG_LEVEL=info \
-"$BIN" >"$BOT_LOG" 2>&1 &
-BOT_PID=$!
-echo "==> bot pid: $BOT_PID  log: $BOT_LOG"
-
-# --- 4. poll for bot reply -----------------------------------------------
-
-TIMEOUT_SEC="${E2E_TIMEOUT_SEC:-90}"
-echo "==> waiting up to ${TIMEOUT_SEC}s for bot to post a reply"
-
-expected_key="source=ping pr=${TEST_PR_NUMBER} trigger=${mention_id} -->"
-deadline=$(( $(date +%s) + TIMEOUT_SEC ))
-bot_reply_id=""
-
-while (( $(date +%s) < deadline )); do
-    sleep 3
-    if ! kill -0 "$BOT_PID" 2>/dev/null; then
-        echo "==> bot process exited unexpectedly. Log:" >&2
-        cat "$BOT_LOG" >&2
-        exit 1
-    fi
-    page=$(gh api "repos/$GITHUB_REPO/issues/$TEST_PR_NUMBER/comments?per_page=100")
-    bot_reply_id=$(echo "$page" \
-        | jq -r --arg login "$BOT_HANDLE" --arg key "$expected_key" '
-            [ .[]
-              | select(.user.login | ascii_downcase == ($login | ascii_downcase))
-              | select(.body | contains($key))
-              | .id
-            ] | first // empty')
-    if [[ -n "$bot_reply_id" && "$bot_reply_id" != "null" ]]; then
-        echo "==> bot reply id: $bot_reply_id"
-        break
-    fi
-done
-
-if [[ -z "$bot_reply_id" || "$bot_reply_id" == "null" ]]; then
-    echo "==> last 30 lines of bot log:" >&2
-    tail -30 "$BOT_LOG" >&2 || true
-    echo "fatal: timed out waiting for bot to post a reply with marker '$expected_key'" >&2
+EXPECTED_KEY="source=ping pr=${TEST_PR_NUMBER} trigger=${MENTION_ID} -->"
+if ! e2e_find_bot_reply "$EXPECTED_KEY"; then
+    echo "fatal: timed out waiting for bot to post a reply with marker '$EXPECTED_KEY'" >&2
     exit 1
 fi
 
-# --- 5. verify -----------------------------------------------------------
-
-reply=$(gh api "repos/$GITHUB_REPO/issues/comments/$bot_reply_id")
+# Verify author + key on the actual reply body.
+reply=$(gh api "repos/$GITHUB_REPO/issues/comments/$BOT_REPLY_ID")
 reply_body=$(echo "$reply" | jq -r '.body')
 reply_login=$(echo "$reply" | jq -r '.user.login')
 
-if [[ "$(lc "$reply_login")" != "$(lc "$BOT_HANDLE")" ]]; then
+if [[ "$(e2e_lc "$reply_login")" != "$(e2e_lc "$BOT_HANDLE")" ]]; then
     echo "fatal: reply author '$reply_login' != expected '$BOT_HANDLE'" >&2
     exit 1
 fi
-if [[ "$reply_body" != *"$expected_key"* ]]; then
-    echo "fatal: reply body does not contain marker key '$expected_key'" >&2
+if [[ "$reply_body" != *"$EXPECTED_KEY"* ]]; then
+    echo "fatal: reply body does not contain marker key '$EXPECTED_KEY'" >&2
     exit 1
 fi
 
-echo "==> PASS: bot replied to mention $mention_id with marker '$expected_key'"
-echo "    reply id:  $bot_reply_id"
+echo "==> PASS: bot replied to mention $MENTION_ID with marker '$EXPECTED_KEY'"
+echo "    reply id:  $BOT_REPLY_ID"
 echo "    head:      $(echo "$reply_body" | head -1)"
 exit 0

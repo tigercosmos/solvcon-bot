@@ -26,6 +26,14 @@ struct Config
     int http_read_timeout_sec = 30;
     int http_write_timeout_sec = 30;
 
+    // GitHub REST API base URL. Default points at the public API.
+    // Override via GITHUB_API_BASE_URL. The bot still appends paths
+    // starting with `/repos/...`, so the override is only useful for
+    // transport tests against a local server (e.g.
+    // http://127.0.0.1:PORT). Full GitHub Enterprise support (path
+    // prefix /api/v3) is not implemented.
+    std::string github_api_base_url = "https://api.github.com";
+
     // Additional env var NAMES to pass through from the bot's
     // environment to the reviewer subprocess. PATH, HOME, LANG, TERM,
     // USER, LOGNAME are always passed; this list adds credentials like

@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel an older run if a new commit is pushed to the same PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build + ctest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install OpenSSL on macOS
+        if: matrix.os == 'macos-14'
+        run: |
+          brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
+      - name: Install OpenSSL on Linux
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev cmake build-essential
+
+      - name: Apply local modmesh parser patches
+        # The two parser fixes (empty arrays/objects + string-state) live in
+        # patches/ until upstreamed. CI applies them before configure.
+        run: ./scripts/apply_modmesh_patches.sh
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run unit tests
+        # ctest exit code propagates. test_github_transport spins a local
+        # httplib::Server on 127.0.0.1; some CI sandboxes block that —
+        # we'd rather see the failure than skip silently.
+        run: ctest --test-dir build --output-on-failure
+        timeout-minutes: 10

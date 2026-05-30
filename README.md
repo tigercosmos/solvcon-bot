@@ -1,5 +1,7 @@
 # modmesh-bot
 
+![CI](https://github.com/tigercosmos/modmesh-bot/actions/workflows/ci.yml/badge.svg)
+
 A lightweight C++23 daemon that watches one GitHub repository's pull
 requests and runs an AI code review when either:
 
@@ -25,11 +27,17 @@ Prerequisites:
   `OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)` to CMake. On Linux:
   the distro's `libssl-dev` is fine.
 
-Submodules:
+Submodules + local modmesh patches:
 
 ```bash
 git submodule update --init --recursive
+./scripts/apply_modmesh_patches.sh   # applies patches/*.patch into third_party/modmesh
 ```
+
+`patches/modmesh-serializer-edge-cases.patch` carries two parser fixes
+that are not yet upstream in modmesh: empty arrays/objects and
+string-state tracking in value scans. The script is idempotent; see
+`issue.md` for the bug details and the upstream-PR plan.
 
 Configure and build:
 
@@ -207,6 +215,20 @@ cmake --build build
 ./scripts/e2e_ping.sh
 ```
 
+Other automated scenarios use the same `.env` and the same shared
+helpers in `scripts/e2e_lib.sh`:
+
+```bash
+./scripts/e2e_truncated_diff.sh    # MAX_DIFF_BYTES=1, expect skip-notice
+./scripts/e2e_reviewer_failure.sh  # reviewer exits non-zero, expect no post
+./scripts/e2e_idempotency.sh       # wipe state, restart, expect marker dedupe
+./scripts/e2e_auto.sh              # auto-path via `gh pr review --approve`
+```
+
+`e2e_auto.sh` requires the test PR to be authored by someone OTHER
+than the gh-authed user — GitHub blocks self-approval. The script
+fails fast with a clear message if that's not the case.
+
 The script:
 
 1. Reads `.env`, verifies `gh` is authed as someone other than the bot.
@@ -275,9 +297,17 @@ modmesh-bot/
 │   ├── test_mention.cpp          word-boundary matching + login eq
 │   └── test_watcher.cpp          fake-driven auto + ping control flow
 ├── .env.example                  template for the .env at repo root (BOT_PAT, GITHUB_REPO, TEST_PR_NUMBER, …)
+├── patches/
+│   └── modmesh-serializer-edge-cases.patch  modmesh JSON parser fixes (apply via scripts/apply_modmesh_patches.sh; see issue.md)
 ├── scripts/
-│   ├── e2e_ping.sh               automated ping-path e2e (uses gh CLI for user-side calls)
-│   └── e2e_auto.md               manual checklist for the auto path
+│   ├── apply_modmesh_patches.sh  bootstrap helper: applies patches/*.patch into third_party/modmesh (idempotent)
+│   ├── e2e_lib.sh                shared helpers sourced by the e2e_*.sh scripts
+│   ├── e2e_ping.sh               ping path: posts an @-mention, waits for the bot's marker-tagged reply
+│   ├── e2e_truncated_diff.sh     MAX_DIFF_BYTES=1: bot must post the "(diff exceeds … skipped)" notice, NOT a review
+│   ├── e2e_reviewer_failure.sh   reviewer exits non-zero: bot must NOT post and must NOT mark the comment handled
+│   ├── e2e_idempotency.sh        wipe state file between two runs; bot must dedupe via marker key and NOT post twice
+│   ├── e2e_auto.sh               auto path: `gh pr review --approve` triggers a single bot review post
+│   └── e2e_auto.md               manual write-up of the auto-path setup
 └── third_party/
     ├── cpp-httplib/httplib.h     vendored, v0.18.5
     └── modmesh/                  submodule, pinned SHA; see issue.md for the local patch

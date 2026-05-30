@@ -160,7 +160,7 @@ struct GithubClient::Impl
     std::string repo_path; // "/repos/{owner}/{repo}"
 
     explicit Impl(const Config & c)
-        : cfg(c), cli("https://api.github.com")
+        : cfg(c), cli(c.github_api_base_url.c_str())
     {
         cli.set_connection_timeout(cfg.http_connect_timeout_sec, 0);
         cli.set_read_timeout(cfg.http_read_timeout_sec, 0);
@@ -198,12 +198,19 @@ struct GithubClient::Impl
     }
 
     // For api.github.com Link headers we want the path+query only.
-    static std::string strip_origin(const std::string & url)
+    std::string strip_origin(const std::string & url) const
     {
-        const std::string prefix = "https://api.github.com";
-        if (url.compare(0, prefix.size(), prefix) == 0)
+        if (url.compare(0, cfg.github_api_base_url.size(),
+                        cfg.github_api_base_url) == 0)
         {
-            return url.substr(prefix.size());
+            return url.substr(cfg.github_api_base_url.size());
+        }
+        // Fall back to the public origin (covers responses that point
+        // back at api.github.com even when our base URL differs).
+        const std::string pub = "https://api.github.com";
+        if (url.compare(0, pub.size(), pub) == 0)
+        {
+            return url.substr(pub.size());
         }
         return url;
     }

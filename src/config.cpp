@@ -158,6 +158,7 @@ Config Config::from_env()
 
     cfg.poll_interval_sec = env_int_or("POLL_INTERVAL_SEC", cfg.poll_interval_sec, 1, 86400);
     cfg.state_file = env_or("STATE_FILE", cfg.state_file);
+    cfg.github_api_base_url = env_or("GITHUB_API_BASE_URL", cfg.github_api_base_url);
     cfg.max_diff_bytes = env_size_or("MAX_DIFF_BYTES", cfg.max_diff_bytes, 1, kSizeMax);
     cfg.max_output_bytes = env_size_or("MAX_OUTPUT_BYTES", cfg.max_output_bytes, 1, kSizeMax);
     cfg.subprocess_timeout_sec = env_int_or("SUBPROCESS_TIMEOUT_SEC", cfg.subprocess_timeout_sec, 1, kIntMax);

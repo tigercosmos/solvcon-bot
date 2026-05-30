@@ -1,0 +1,109 @@
+diff --git a/cpp/modmesh/serialization/SerializableItem.cpp b/cpp/modmesh/serialization/SerializableItem.cpp
+index f49820c..a909706 100644
+--- a/cpp/modmesh/serialization/SerializableItem.cpp
++++ b/cpp/modmesh/serialization/SerializableItem.cpp
+@@ -146,6 +146,13 @@ JsonArray JsonNode::parse_array(const std::string & json)
+         case JsonState::ObjectValue:
+             value_expression.clear();
+ 
++            if (c == ']')
++            {
++                // Empty array (or trailing-comma terminator).
++                state = JsonState::End;
++                break;
++            }
++
+             if (c == '{')
+             {
+                 // go to the end of the object
+@@ -196,12 +203,36 @@ JsonArray JsonNode::parse_array(const std::string & json)
+ 
+                 // we assume the value is a string, number, boolean, or null, and the expression is correct
+                 // if the expression is not correct, the exception will be thrown when parsing the value later
++                // Track quoted-string state so that ',' or ']' inside a
++                // string value does not terminate the scan early.
++                bool in_string = false;
++                bool escape = false;
+                 while (index < json.size() - 1)
+                 {
+-                    value_expression.push_back(json[index]);
++                    const char c_curr = json[index];
++                    value_expression.push_back(c_curr);
++                    if (escape)
++                    {
++                        escape = false;
++                    }
++                    else if (in_string)
++                    {
++                        if (c_curr == '\\')
++                        {
++                            escape = true;
++                        }
++                        else if (c_curr == '"')
++                        {
++                            in_string = false;
++                        }
++                    }
++                    else if (c_curr == '"')
++                    {
++                        in_string = true;
++                    }
+ 
+                     const char c_next = json[index + 1];
+-                    if (c_next == ',' || c_next == ']')
++                    if (!in_string && (c_next == ',' || c_next == ']'))
+                     {
+                         break;
+                     }
+@@ -328,6 +359,12 @@ JsonMap JsonNode::parse_object(const std::string & json)
+             state = JsonState::ObjectKey;
+             break; /* end case JsonState::Start */
+         case JsonState::ObjectKey:
++            if (c == '}')
++            {
++                // Empty object (or trailing-comma terminator).
++                state = JsonState::End;
++                break;
++            }
+             if (c == '"')
+             {
+                 key.clear();
+@@ -445,12 +482,36 @@ JsonMap JsonNode::parse_object(const std::string & json)
+ 
+                 // we assume the value is a string, number, boolean, or null, and the expression is correct
+                 // if the expression is not correct, the exception will be thrown when parsing the value later
++                // Track quoted-string state so that ',' or '}' inside a
++                // string value does not terminate the scan early.
++                bool in_string = false;
++                bool escape = false;
+                 while (index < json.size() - 1)
+                 {
+-                    value_expression.push_back(json[index]);
++                    const char c_curr = json[index];
++                    value_expression.push_back(c_curr);
++                    if (escape)
++                    {
++                        escape = false;
++                    }
++                    else if (in_string)
++                    {
++                        if (c_curr == '\\')
++                        {
++                            escape = true;
++                        }
++                        else if (c_curr == '"')
++                        {
++                            in_string = false;
++                        }
++                    }
++                    else if (c_curr == '"')
++                    {
++                        in_string = true;
++                    }
+ 
+                     const char c_next = json[index + 1];
+-                    if (c_next == ',' || c_next == '}')
++                    if (!in_string && (c_next == ',' || c_next == '}'))
+                     {
+                         break;
+                     }

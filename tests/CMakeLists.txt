@@ -42,3 +42,8 @@ add_executable(test_log test_log.cpp)
 target_link_libraries(test_log PRIVATE modmesh-bot-lib)
 target_compile_options(test_log PRIVATE -Wall -Wextra -Werror)
 add_test(NAME log COMMAND test_log)
+
+add_executable(test_github_transport test_github_transport.cpp)
+target_link_libraries(test_github_transport PRIVATE modmesh-bot-lib)
+target_compile_options(test_github_transport PRIVATE -Wall -Wextra -Werror)
+add_test(NAME github_transport COMMAND test_github_transport)
