@@ -1,10 +1,13 @@
 #include "reviewer.hpp"
 
+#include "claude_stream_parser.hpp"
 #include "subprocess.hpp"
 
 #include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -52,6 +55,19 @@ public:
         ReviewerInvocation inv;
         inv.argv.push_back("claude");
         inv.argv.push_back("-p");
+        // We always ask for stream-json output, even when the operator
+        // hasn't enabled REVIEWER_STREAM_IO. The plain `text` format
+        // buffers the whole response until the end and yields no
+        // progress signal at all; stream-json gives us one JSON event
+        // per line and lets ClaudeStreamParser surface live activity
+        // to stderr when the operator opted in. The bot daemon still
+        // gets the same plain-markdown body via parser.final_text() —
+        // the wire format change is internal.
+        inv.argv.push_back("--output-format");
+        inv.argv.push_back("stream-json");
+        // --verbose is required by claude when --output-format is
+        // stream-json (init/result events are gated behind it).
+        inv.argv.push_back("--verbose");
         if (!m_model.empty())
         {
             inv.argv.push_back("--model");
@@ -70,16 +86,35 @@ public:
 
     std::string run(const std::string & diff) override
     {
-        // Heartbeat runs independently of stream_io. The original
-        // logic suppressed it on the assumption that streamed child
-        // output was itself the progress signal, but `claude -p`
-        // buffers its entire response until completion — so the tee
-        // has nothing to forward during the wait. Two cheap, disjoint
-        // signals beat one signal that the child can silently
-        // withhold. m_heartbeat_sec=0 still disables (the bot daemon
-        // default; operators opt in via REVIEWER_HEARTBEAT_SEC).
         Heartbeat hb(m_heartbeat_sec, "modmesh-bot: claude reviewer");
         const ReviewerInvocation inv = build_invocation(diff);
+
+        // The parser ALWAYS runs — claude now emits JSON events on
+        // stdout, so this is how we extract the plain markdown body
+        // we return to the caller. The progress sink is only installed
+        // when the operator opted into streaming; with no sink the
+        // parser is silent and the daemon's log stays clean.
+        ClaudeStreamParser parser;
+        if (m_stream_io)
+        {
+            parser.set_progress_sink([](std::string_view line)
+            {
+                // ::write skips stdio buffering so progress is visible
+                // immediately; best-effort, ignore short writes.
+                ssize_t left = static_cast<ssize_t>(line.size());
+                const char * p = line.data();
+                while (left > 0)
+                {
+                    ssize_t w = ::write(STDERR_FILENO, p, left);
+                    if (w <= 0) break;
+                    left -= w;
+                    p += w;
+                }
+            });
+        }
+        StdoutChunkHandler chunk_handler =
+            [&parser](std::string_view chunk) { parser.feed(chunk); };
+
         RunResult r;
         try
         {
@@ -89,13 +124,17 @@ public:
                                m_subprocess_timeout_sec,
                                inv.env_passthrough,
                                inv.env_values,
-                               m_stream_io);
+                               m_stream_io,
+                               chunk_handler);
         }
         catch (const std::exception & e)
         {
             throw ReviewerError(
                 std::string("claude reviewer setup failed: ") + e.what());
         }
+        // The child may close stdout without a final newline if it
+        // crashes mid-event. flush() processes any trailing partial.
+        parser.flush();
 
         if (r.timed_out)
         {
@@ -114,8 +153,37 @@ public:
                 << "):\n" << r.stderr_buf;
             throw ReviewerError(oss.str());
         }
-        return maybe_append_truncation_note(
-            std::move(r.stdout_buf), r.stdout_truncated);
+        if (parser.saw_error())
+        {
+            // Successful CLI invocation, but the model itself reported
+            // failure (is_error=true in the result event). Surface the
+            // captured body so the operator can see what went wrong.
+            std::ostringstream oss;
+            oss << "claude reviewer reported is_error=true; body:\n"
+                << parser.final_text();
+            throw ReviewerError(oss.str());
+        }
+
+        std::string body = parser.final_text();
+        bool body_truncated = false;
+        if (body.empty())
+        {
+            // Defensive fallback: parser couldn't extract a body (no
+            // result event, no assistant text). Hand back the raw
+            // stdout so the operator sees whatever claude actually
+            // wrote, with the cap-truncation note if applicable.
+            body = std::move(r.stdout_buf);
+            body_truncated = r.stdout_truncated;
+        }
+        else if (body.size() > m_max_output_bytes)
+        {
+            // Enforce the cap on the EXTRACTED body, not the wrapping
+            // JSON stream — that's what callers (GitHub PR comment)
+            // care about.
+            body.resize(m_max_output_bytes);
+            body_truncated = true;
+        }
+        return maybe_append_truncation_note(std::move(body), body_truncated);
     }
 
 private:

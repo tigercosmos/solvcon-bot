@@ -47,3 +47,8 @@ add_executable(test_github_transport test_github_transport.cpp)
 target_link_libraries(test_github_transport PRIVATE modmesh-bot-lib)
 target_compile_options(test_github_transport PRIVATE -Wall -Wextra -Werror)
 add_test(NAME github_transport COMMAND test_github_transport)
+
+add_executable(test_claude_stream_parser test_claude_stream_parser.cpp)
+target_link_libraries(test_claude_stream_parser PRIVATE modmesh-bot-lib)
+target_compile_options(test_claude_stream_parser PRIVATE -Wall -Wextra -Werror)
+add_test(NAME claude_stream_parser COMMAND test_claude_stream_parser)

@@ -152,16 +152,24 @@ int main(int argc, char ** argv)
               << " heartbeat_sec=" << cfg.reviewer_heartbeat_sec
               << std::endl;
     if (cfg.reviewer_stream_io
-        && (cfg.reviewer_kind == modmesh_bot::ReviewerKind::Claude
-            || cfg.reviewer_kind == modmesh_bot::ReviewerKind::Codex))
+        && cfg.reviewer_kind == modmesh_bot::ReviewerKind::Claude)
+    {
+        std::cerr << "run-reviewer: stream_io is on — claude is invoked "
+                     "with --output-format stream-json --verbose and a "
+                     "parser surfaces each event (init/turn/tool/result) "
+                     "to this stderr as it arrives. The plain markdown "
+                     "body is re-printed on stdout at the end so you can "
+                     "pipe it."
+                  << std::endl;
+    }
+    else if (cfg.reviewer_stream_io
+             && cfg.reviewer_kind == modmesh_bot::ReviewerKind::Codex)
     {
         std::cerr << "run-reviewer: stream_io is on — child stdout/stderr "
-                     "will be mirrored to this stderr as it arrives. Note "
-                     "that `claude -p` and `codex exec` buffer their full "
-                     "response until completion, so the visible signal "
-                     "during the wait is usually the heartbeat below; the "
-                     "review body lands all at once at the end and is also "
-                     "re-printed on stdout."
+                     "are mirrored to this stderr. `codex exec` buffers "
+                     "its response until completion, so during the wait "
+                     "the visible signal is the heartbeat below; the "
+                     "review body lands at the end."
                   << std::endl;
     }
 

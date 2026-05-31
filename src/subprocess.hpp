@@ -1,12 +1,22 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace modmesh_bot
 {
+
+// Optional handler invoked for each stdout chunk the child writes, in
+// the order it arrives. When set, the auto-tee for stdout is bypassed
+// (the handler owns presentation of those bytes); stderr is unaffected
+// and still tees per tee_child_io_to_stderr. Chunks are still appended
+// to RunResult::stdout_buf for capture / fallback. The view's bytes
+// are valid only for the duration of the call.
+using StdoutChunkHandler = std::function<void(std::string_view)>;
 
 struct RunResult
 {
@@ -60,6 +70,7 @@ RunResult run_subprocess(
     int timeout_seconds,
     const std::vector<std::string> & extra_env_allowlist = {},
     const std::vector<std::pair<std::string, std::string>> & extra_env_values = {},
-    bool tee_child_io_to_stderr = false);
+    bool tee_child_io_to_stderr = false,
+    const StdoutChunkHandler & on_stdout_chunk = {});
 
 } // namespace modmesh_bot

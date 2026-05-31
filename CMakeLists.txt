@@ -35,6 +35,7 @@ add_library(modmesh-bot-lib STATIC
     src/reviewer.cpp
     src/reviewer_claude.cpp
     src/reviewer_codex.cpp
+    src/claude_stream_parser.cpp
     src/mention.cpp
     src/watcher.cpp
 )
