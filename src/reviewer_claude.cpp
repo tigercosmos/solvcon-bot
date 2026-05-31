@@ -68,6 +68,14 @@ public:
         // --verbose is required by claude when --output-format is
         // stream-json (init/result events are gated behind it).
         inv.argv.push_back("--verbose");
+        // Without this, claude buffers the entire assistant message
+        // until the API call completes (~1–3 min for a real review)
+        // and emits one big `assistant` event at the end. With it,
+        // claude emits incremental stream_event records carrying
+        // text_delta payloads (i.e. live tokens). The parser pipes
+        // those to a text-delta sink so the operator can watch claude
+        // actually type the review.
+        inv.argv.push_back("--include-partial-messages");
         if (!m_model.empty())
         {
             inv.argv.push_back("--model");
@@ -97,12 +105,14 @@ public:
         ClaudeStreamParser parser;
         if (m_stream_io)
         {
-            parser.set_progress_sink([](std::string_view line)
+            // ::write skips stdio buffering so progress is visible
+            // immediately; best-effort, ignore short writes. The same
+            // helper is used for both line-framed events and raw text
+            // deltas — the parser does the framing.
+            auto write_stderr = [](std::string_view buf)
             {
-                // ::write skips stdio buffering so progress is visible
-                // immediately; best-effort, ignore short writes.
-                ssize_t left = static_cast<ssize_t>(line.size());
-                const char * p = line.data();
+                ssize_t left = static_cast<ssize_t>(buf.size());
+                const char * p = buf.data();
                 while (left > 0)
                 {
                     ssize_t w = ::write(STDERR_FILENO, p, left);
@@ -110,7 +120,9 @@ public:
                     left -= w;
                     p += w;
                 }
-            });
+            };
+            parser.set_progress_sink(write_stderr);
+            parser.set_text_delta_sink(write_stderr);
         }
         StdoutChunkHandler chunk_handler =
             [&parser](std::string_view chunk) { parser.feed(chunk); };

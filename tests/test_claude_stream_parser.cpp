@@ -201,6 +201,164 @@ void test_tool_use_block_logged_but_does_not_break_text_capture()
     EXPECT(sink.text.find("tool result received") != std::string::npos);
 }
 
+// Realistic stream payload when claude is invoked with
+// --include-partial-messages. Captured shape mirrors the probe taken
+// against a real `claude -p --output-format stream-json --verbose
+// --include-partial-messages` invocation: status=requesting fires
+// before the first stream_event; per-block start/delta/stop lifecycle
+// events accompany the text content; a consolidated assistant event
+// arrives after each completed block sharing the same message id.
+const char * const k_partial_stream =
+    "{\"type\":\"system\",\"subtype\":\"init\","
+    "\"session_id\":\"abc\",\"model\":\"claude-opus-4-8\"}\n"
+    "{\"type\":\"system\",\"subtype\":\"status\","
+    "\"status\":\"requesting\"}\n"
+    "{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\","
+    "\"message\":{\"id\":\"msg_partial\",\"role\":\"assistant\"}}}\n"
+    "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\","
+    "\"index\":0,\"content_block\":{\"type\":\"thinking\","
+    "\"thinking\":\"\",\"signature\":\"\"}}}\n"
+    "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\","
+    "\"index\":0,\"delta\":{\"type\":\"signature_delta\","
+    "\"signature\":\"deadbeef\"}}}\n"
+    "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_stop\","
+    "\"index\":0}}\n"
+    "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_partial\","
+    "\"role\":\"assistant\","
+    "\"content\":[{\"type\":\"thinking\",\"thinking\":\"\"}]}}\n"
+    "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\","
+    "\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}\n"
+    "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\","
+    "\"index\":1,\"delta\":{\"type\":\"text_delta\","
+    "\"text\":\"Hello \"}}}\n"
+    "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\","
+    "\"index\":1,\"delta\":{\"type\":\"text_delta\","
+    "\"text\":\"world\"}}}\n"
+    "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_stop\","
+    "\"index\":1}}\n"
+    "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_partial\","
+    "\"role\":\"assistant\","
+    "\"content\":[{\"type\":\"text\",\"text\":\"Hello world\"}]}}\n"
+    "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,"
+    "\"duration_ms\":1500,\"num_turns\":1,"
+    "\"result\":\"Hello world\",\"total_cost_usd\":0.01}\n";
+
+void test_stream_event_text_deltas_route_to_text_sink_verbatim()
+{
+    // The crux: live tokens should reach the operator BEFORE the
+    // assistant event consolidates the message.
+    mb::ClaudeStreamParser p;
+    std::string streamed;
+    p.set_text_delta_sink(
+        [&streamed](std::string_view chunk)
+        { streamed.append(chunk.data(), chunk.size()); });
+    p.feed(k_partial_stream);
+    EXPECT_EQ(streamed, std::string("Hello world"));
+    EXPECT_EQ(p.final_text(), std::string("Hello world"));
+    // Two assistant events but same message id -> one turn.
+    EXPECT_EQ(p.assistant_turn_count(), 1);
+}
+
+void test_stream_event_progress_lines_cover_lifecycle()
+{
+    mb::ClaudeStreamParser p;
+    CaptureSink sink;
+    p.set_progress_sink(std::ref(sink));
+    // No text sink: we just want to verify the progress lines.
+    p.feed(k_partial_stream);
+    // We expect lifecycle lines for: init, requesting, thinking,
+    // writing text, text done, done. Plus the assistant-event
+    // per-block "turn 1 text(11b):" emit (kept for callers that
+    // don't install a text sink). The order should be:
+    //   init -> requesting -> thinking -> writing text -> text done
+    //   -> turn 1 text(...): preview -> done
+    EXPECT(sink.text.find("claude: init") != std::string::npos);
+    EXPECT(sink.text.find("claude: requesting") != std::string::npos);
+    EXPECT(sink.text.find("claude: thinking...") != std::string::npos);
+    EXPECT(sink.text.find("claude: writing text...") != std::string::npos);
+    EXPECT(sink.text.find("claude: text done (11 chars)") != std::string::npos);
+    EXPECT(sink.text.find("claude: done in 1.5s, turns=1") != std::string::npos);
+}
+
+void test_stream_event_text_sink_unset_leaves_capture_intact()
+{
+    // Without a text sink, deltas are silently parsed (chars counted
+    // for the text_done line) but never streamed. final_text still
+    // comes from the result event.
+    mb::ClaudeStreamParser p;
+    CaptureSink sink;
+    p.set_progress_sink(std::ref(sink));
+    p.feed(k_partial_stream);
+    EXPECT_EQ(p.final_text(), std::string("Hello world"));
+    EXPECT(sink.text.find("text done (11 chars)") != std::string::npos);
+}
+
+void test_unterminated_text_stream_gets_newline_before_progress()
+{
+    // Regression: when the last text_delta does NOT end with a newline
+    // (the common case — claude rarely ends with one) the next
+    // line-framed progress emit must not glue onto the streamed body.
+    // emit() must inject a "\n" via the text-delta sink first.
+    mb::ClaudeStreamParser p;
+    std::string streamed;
+    p.set_text_delta_sink(
+        [&streamed](std::string_view chunk)
+        { streamed.append(chunk.data(), chunk.size()); });
+    CaptureSink progress;
+    p.set_progress_sink(std::ref(progress));
+    p.feed("{\"type\":\"stream_event\",\"event\":{\"type\":"
+           "\"content_block_start\",\"index\":0,"
+           "\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}\n");
+    p.feed("{\"type\":\"stream_event\",\"event\":{\"type\":"
+           "\"content_block_delta\",\"index\":0,\"delta\":{"
+           "\"type\":\"text_delta\",\"text\":\"hello\"}}}\n");
+    p.feed("{\"type\":\"stream_event\",\"event\":{\"type\":"
+           "\"content_block_stop\",\"index\":0}}\n");
+    // The streamed body should be "hello\n" — the trailing newline
+    // was injected BY emit() right before "claude: text done"
+    // landed on the progress sink.
+    EXPECT_EQ(streamed, std::string("hello\n"));
+    EXPECT(progress.text.find("text done (5 chars)") != std::string::npos);
+}
+
+void test_text_stream_ending_with_newline_does_not_double_newline()
+{
+    // Counterpart to above: if claude's last delta already ends with
+    // '\n' (rare but possible), we MUST NOT inject another one.
+    mb::ClaudeStreamParser p;
+    std::string streamed;
+    p.set_text_delta_sink(
+        [&streamed](std::string_view chunk)
+        { streamed.append(chunk.data(), chunk.size()); });
+    p.set_progress_sink([](std::string_view){}); // installed but discards
+    p.feed("{\"type\":\"stream_event\",\"event\":{\"type\":"
+           "\"content_block_start\",\"index\":0,"
+           "\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}\n");
+    p.feed("{\"type\":\"stream_event\",\"event\":{\"type\":"
+           "\"content_block_delta\",\"index\":0,\"delta\":{"
+           "\"type\":\"text_delta\",\"text\":\"hello\\n\"}}}\n");
+    p.feed("{\"type\":\"stream_event\",\"event\":{\"type\":"
+           "\"content_block_stop\",\"index\":0}}\n");
+    EXPECT_EQ(streamed, std::string("hello\n")); // exactly one newline
+}
+
+void test_partial_assistant_events_dedupe_turn_count()
+{
+    // Three assistant events sharing one message id: one logical
+    // turn. (Would be three if the dedupe broke.)
+    mb::ClaudeStreamParser p;
+    p.feed("{\"type\":\"assistant\",\"message\":{\"id\":\"same\","
+           "\"content\":[{\"type\":\"thinking\",\"thinking\":\"\"}]}}\n");
+    p.feed("{\"type\":\"assistant\",\"message\":{\"id\":\"same\","
+           "\"content\":[{\"type\":\"text\",\"text\":\"A\"}]}}\n");
+    p.feed("{\"type\":\"assistant\",\"message\":{\"id\":\"same\","
+           "\"content\":[{\"type\":\"text\",\"text\":\"B\"}]}}\n");
+    EXPECT_EQ(p.assistant_turn_count(), 1);
+    // Two text blocks across the three events: fallback accumulates
+    // both.
+    EXPECT_EQ(p.final_text(), std::string("AB"));
+}
+
 } // namespace
 
 int main()
@@ -214,6 +372,12 @@ int main()
     test_unparseable_line_skipped_not_fatal();
     test_fallback_assistant_text_when_no_result_event();
     test_tool_use_block_logged_but_does_not_break_text_capture();
+    test_stream_event_text_deltas_route_to_text_sink_verbatim();
+    test_stream_event_progress_lines_cover_lifecycle();
+    test_stream_event_text_sink_unset_leaves_capture_intact();
+    test_unterminated_text_stream_gets_newline_before_progress();
+    test_text_stream_ending_with_newline_does_not_double_newline();
+    test_partial_assistant_events_dedupe_turn_count();
     if (g_failures != 0)
     {
         std::cerr << g_failures << " failure(s)\n";

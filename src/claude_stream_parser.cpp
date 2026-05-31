@@ -170,6 +170,11 @@ void ClaudeStreamParser::set_progress_sink(ProgressSink sink)
     m_sink = std::move(sink);
 }
 
+void ClaudeStreamParser::set_text_delta_sink(TextDeltaSink sink)
+{
+    m_text_delta_sink = std::move(sink);
+}
+
 void ClaudeStreamParser::feed(std::string_view chunk)
 {
     m_partial_line.append(chunk.data(), chunk.size());
@@ -206,6 +211,15 @@ std::string ClaudeStreamParser::final_text() const
 void ClaudeStreamParser::emit(std::string line)
 {
     if (!m_sink) return;
+    // If the live text stream ended mid-line, terminate it with a
+    // newline before this line-framed event so structural progress
+    // doesn't glue onto the streamed body (e.g. the response ending
+    // in "...10" must not run into "claude: turn 1 text(...)").
+    if (m_text_stream_open && m_text_delta_sink)
+    {
+        m_text_delta_sink(std::string_view("\n", 1));
+        m_text_stream_open = false;
+    }
     if (line.empty() || line.back() != '\n') line.push_back('\n');
     m_sink(line);
 }
@@ -260,13 +274,94 @@ void ClaudeStreamParser::process_line(std::string_view raw)
                 << " session=" << session.substr(0, 8);
             emit(oss.str());
         }
+        else if (subtype == "status")
+        {
+            // e.g. status=requesting fires when claude starts the API
+            // call — the moment after which the user otherwise sees
+            // nothing until the response lands.
+            const std::string status = get_string(obj, "status").value_or("?");
+            emit("claude: " + status);
+        }
         // Skip hook_started / hook_response / other system noise.
+    }
+    else if (type == "stream_event")
+    {
+        // stream_event records carry per-block lifecycle and per-token
+        // deltas (only present when claude is invoked with
+        // --include-partial-messages). They give the operator a live
+        // signal during the long API wait.
+        const auto * event = get_object(obj, "event");
+        if (event == nullptr) return;
+        const std::string ev_type = get_string(*event, "type").value_or("");
+
+        if (ev_type == "content_block_start")
+        {
+            const auto * cb = get_object(*event, "content_block");
+            if (cb == nullptr) return;
+            const std::string cb_type = get_string(*cb, "type").value_or("");
+            if (cb_type == "thinking")
+            {
+                emit("claude: thinking...");
+            }
+            else if (cb_type == "text")
+            {
+                emit("claude: writing text...");
+                m_in_text_block = true;
+                m_text_block_chars = 0;
+            }
+            else if (cb_type == "tool_use")
+            {
+                const std::string name = get_string(*cb, "name").value_or("?");
+                emit("claude: tool_use " + name);
+            }
+        }
+        else if (ev_type == "content_block_delta")
+        {
+            const auto * delta = get_object(*event, "delta");
+            if (delta == nullptr) return;
+            const std::string delta_type = get_string(*delta, "type").value_or("");
+            if (delta_type == "text_delta")
+            {
+                const std::string t = get_string(*delta, "text").value_or("");
+                if (m_text_delta_sink && !t.empty())
+                {
+                    m_text_delta_sink(t);
+                    m_text_stream_open = (t.back() != '\n');
+                }
+                m_text_block_chars += t.size();
+            }
+            // signature_delta (thinking) is binary tokens — useless to
+            // surface. input_json_delta (tool_use) is JSON we'd have to
+            // re-parse — skip too; the tool_use start event already
+            // told the operator a tool is running.
+        }
+        else if (ev_type == "content_block_stop")
+        {
+            if (m_in_text_block)
+            {
+                std::ostringstream oss;
+                oss << "claude: text done (" << m_text_block_chars << " chars)";
+                emit(oss.str());
+                m_in_text_block = false;
+            }
+        }
+        // message_start / message_delta / message_stop carry only usage
+        // bookkeeping the operator doesn't need; silently ignored.
     }
     else if (type == "assistant")
     {
-        ++m_assistant_turn_count;
+        // With --include-partial-messages, claude emits one `assistant`
+        // event per completed content block, all sharing the same
+        // message id. Dedupe by id so turn_count means "logical turns"
+        // not "events received".
         const auto * msg = get_object(obj, "message");
         if (msg == nullptr) return;
+        const std::string id = get_string(*msg, "id").value_or("");
+        if (id.empty() || id != m_last_assistant_msg_id)
+        {
+            m_last_assistant_msg_id = id;
+            ++m_assistant_turn_count;
+        }
         const auto * content = get_array(*msg, "content");
         if (content == nullptr) return;
 

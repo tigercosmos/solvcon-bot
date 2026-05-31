@@ -162,15 +162,16 @@ void test_claude_invocation_minimal_uses_defaults()
     Config c = make_cfg(ReviewerKind::Claude);
     auto inv = mb::claude_build_invocation_for_test(c, "diff bytes");
     // argv: claude -p --output-format stream-json --verbose
-    //       --model claude-opus-4-8
-    EXPECT_EQ(inv.argv.size(), static_cast<std::size_t>(7));
+    //       --include-partial-messages --model claude-opus-4-8
+    EXPECT_EQ(inv.argv.size(), static_cast<std::size_t>(8));
     EXPECT_EQ(inv.argv[0], std::string("claude"));
     EXPECT_EQ(inv.argv[1], std::string("-p"));
     EXPECT_EQ(inv.argv[2], std::string("--output-format"));
     EXPECT_EQ(inv.argv[3], std::string("stream-json"));
     EXPECT_EQ(inv.argv[4], std::string("--verbose"));
-    EXPECT_EQ(inv.argv[5], std::string("--model"));
-    EXPECT_EQ(inv.argv[6], std::string("claude-opus-4-8"));
+    EXPECT_EQ(inv.argv[5], std::string("--include-partial-messages"));
+    EXPECT_EQ(inv.argv[6], std::string("--model"));
+    EXPECT_EQ(inv.argv[7], std::string("claude-opus-4-8"));
     // stdin includes the default prompt + diff block
     EXPECT(inv.stdin_input.find(mb::default_review_prompt()) == 0);
     EXPECT(inv.stdin_input.find("diff bytes") != std::string::npos);
@@ -185,9 +186,9 @@ void test_claude_invocation_model_override()
     Config c = make_cfg(ReviewerKind::Claude);
     c.reviewer_model = "claude-sonnet-4-6";
     auto inv = mb::claude_build_invocation_for_test(c, "x");
-    EXPECT_EQ(inv.argv.size(), static_cast<std::size_t>(7));
-    EXPECT_EQ(inv.argv[5], std::string("--model"));
-    EXPECT_EQ(inv.argv[6], std::string("claude-sonnet-4-6"));
+    EXPECT_EQ(inv.argv.size(), static_cast<std::size_t>(8));
+    EXPECT_EQ(inv.argv[6], std::string("--model"));
+    EXPECT_EQ(inv.argv[7], std::string("claude-sonnet-4-6"));
     // Effort still defaults.
     EXPECT_EQ(inv.env_values.size(), static_cast<std::size_t>(1));
     EXPECT_EQ(inv.env_values[0].second, std::string("high"));
@@ -202,7 +203,7 @@ void test_claude_effort_override()
     EXPECT_EQ(inv.env_values[0].first, std::string("CLAUDE_EFFORT"));
     EXPECT_EQ(inv.env_values[0].second, std::string("xhigh"));
     // Model still defaults.
-    EXPECT_EQ(inv.argv[6], std::string("claude-opus-4-8"));
+    EXPECT_EQ(inv.argv[7], std::string("claude-opus-4-8"));
 }
 
 void test_claude_custom_prompt_replaces_default()

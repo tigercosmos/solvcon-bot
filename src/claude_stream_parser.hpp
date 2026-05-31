@@ -25,6 +25,11 @@ class ClaudeStreamParser
 {
 public:
     using ProgressSink = std::function<void(std::string_view)>;
+    // Raw assistant-text fragments arriving live via
+    // stream_event/content_block_delta. The caller owns presentation
+    // (no framing, no newlines added) — wire it to stderr to see
+    // claude type the review token-by-token.
+    using TextDeltaSink = std::function<void(std::string_view)>;
 
     ClaudeStreamParser();
     ~ClaudeStreamParser();
@@ -35,6 +40,10 @@ public:
     // Install the progress sink. Each emitted line is already
     // newline-terminated. Pass {} to disable progress output (default).
     void set_progress_sink(ProgressSink sink);
+
+    // Install the text-delta sink (see TextDeltaSink). Pass {} to
+    // disable live text streaming (default — the bot daemon's mode).
+    void set_text_delta_sink(TextDeltaSink sink);
 
     // Feed a chunk of NDJSON bytes from claude's stdout. Complete lines
     // are parsed and dispatched immediately; partial trailing lines are
@@ -68,10 +77,19 @@ private:
 
     std::string m_partial_line;
     ProgressSink m_sink;
+    TextDeltaSink m_text_delta_sink;
     std::string m_final_result;
     std::string m_assistant_text_fallback;
+    std::string m_last_assistant_msg_id;
     bool m_saw_result = false;
     bool m_saw_error = false;
+    bool m_in_text_block = false;
+    // True iff the last byte written to the text-delta sink was NOT
+    // a newline — i.e. the live text stream is mid-line. emit() uses
+    // this to inject a terminating newline before line-framed progress
+    // so structural events don't run together with the streamed body.
+    bool m_text_stream_open = false;
+    std::size_t m_text_block_chars = 0;
     int m_assistant_turn_count = 0;
     int m_line_count = 0;
     int m_parse_error_count = 0;
