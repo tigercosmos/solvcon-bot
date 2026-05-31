@@ -155,9 +155,13 @@ int main(int argc, char ** argv)
         && (cfg.reviewer_kind == modmesh_bot::ReviewerKind::Claude
             || cfg.reviewer_kind == modmesh_bot::ReviewerKind::Codex))
     {
-        std::cerr << "run-reviewer: streaming child stdout/stderr below "
-                     "(reviewer output appears live). Full body is also "
-                     "captured and re-printed on stdout when done."
+        std::cerr << "run-reviewer: stream_io is on — child stdout/stderr "
+                     "will be mirrored to this stderr as it arrives. Note "
+                     "that `claude -p` and `codex exec` buffer their full "
+                     "response until completion, so the visible signal "
+                     "during the wait is usually the heartbeat below; the "
+                     "review body lands all at once at the end and is also "
+                     "re-printed on stdout."
                   << std::endl;
     }
 

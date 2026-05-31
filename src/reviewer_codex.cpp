@@ -69,8 +69,10 @@ public:
 
     std::string run(const std::string & diff) override
     {
-        Heartbeat hb(m_stream_io ? 0 : m_heartbeat_sec,
-                     "modmesh-bot: codex reviewer");
+        // See reviewer_claude.cpp for the rationale: codex exec also
+        // buffers its output, so stream_io alone is not enough of a
+        // progress signal. Heartbeat is independent.
+        Heartbeat hb(m_heartbeat_sec, "modmesh-bot: codex reviewer");
         const ReviewerInvocation inv = build_invocation(diff);
         RunResult r;
         try

@@ -70,12 +70,15 @@ public:
 
     std::string run(const std::string & diff) override
     {
-        // Heartbeat is suppressed when stream_io is on (the streamed
-        // child output is itself the progress signal). Otherwise we
-        // fire every m_heartbeat_sec seconds, which is 0 for the bot
-        // daemon by default — operators opt in via env.
-        Heartbeat hb(m_stream_io ? 0 : m_heartbeat_sec,
-                     "modmesh-bot: claude reviewer");
+        // Heartbeat runs independently of stream_io. The original
+        // logic suppressed it on the assumption that streamed child
+        // output was itself the progress signal, but `claude -p`
+        // buffers its entire response until completion — so the tee
+        // has nothing to forward during the wait. Two cheap, disjoint
+        // signals beat one signal that the child can silently
+        // withhold. m_heartbeat_sec=0 still disables (the bot daemon
+        // default; operators opt in via REVIEWER_HEARTBEAT_SEC).
+        Heartbeat hb(m_heartbeat_sec, "modmesh-bot: claude reviewer");
         const ReviewerInvocation inv = build_invocation(diff);
         RunResult r;
         try
