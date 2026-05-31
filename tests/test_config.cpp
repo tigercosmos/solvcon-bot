@@ -398,6 +398,24 @@ void test_reviewer_stream_io_invalid_rejected()
                                   "REVIEWER_STREAM_IO"));
 }
 
+void test_reviewer_stream_io_falsy_clears_preset_true()
+{
+    // Regression: apply_reviewer_env's REVIEWER_STREAM_IO branch used to
+    // be write-only-when-truthy, so a caller (e.g. run-reviewer setting
+    // its own tool-default) couldn't disable it via env. Now the falsy
+    // branch is a real setter.
+    clear_env();
+    set_required_defaults();
+    for (const char * val : {"0", "false", "no", "off"})
+    {
+        ::setenv("REVIEWER_STREAM_IO", val, 1);
+        Config c;
+        c.reviewer_stream_io = true;
+        apply_reviewer_env(c);
+        EXPECT(!c.reviewer_stream_io);
+    }
+}
+
 void test_reviewer_heartbeat_sec()
 {
     clear_env();
@@ -563,6 +581,7 @@ int main()
     test_reviewer_stream_io_on();
     test_reviewer_stream_io_off();
     test_reviewer_stream_io_invalid_rejected();
+    test_reviewer_stream_io_falsy_clears_preset_true();
     test_reviewer_heartbeat_sec();
     test_reviewer_heartbeat_sec_zero_means_off();
     test_reviewer_heartbeat_sec_out_of_range();

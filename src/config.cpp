@@ -279,7 +279,14 @@ void apply_reviewer_env(Config & cfg)
         {
             cfg.reviewer_stream_io = true;
         }
-        else if (!v.empty() && v != "0" && v != "false" && v != "no" && v != "off")
+        else if (v == "0" || v == "false" || v == "no" || v == "off")
+        {
+            // Symmetric: a falsy env value clears a pre-set true. Without
+            // this, run-reviewer's tool-default override (or any caller
+            // that pre-sets the flag) could not be turned off via env.
+            cfg.reviewer_stream_io = false;
+        }
+        else if (!v.empty())
         {
             throw std::runtime_error(
                 "REVIEWER_STREAM_IO must be one of 1/0/true/false/yes/no/on/off");
