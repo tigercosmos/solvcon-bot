@@ -143,6 +143,8 @@ Optional:
 | `HTTP_READ_TIMEOUT_SEC` | `30` | cpp-httplib `set_read_timeout`. |
 | `HTTP_WRITE_TIMEOUT_SEC` | `30` | cpp-httplib `set_write_timeout`. |
 | `REVIEWER_ENV_PASSTHROUGH` | empty | Comma-separated list of env-var names to pass through to the reviewer subprocess on top of the defaults (`PATH`/`HOME`/`LANG`/`TERM`/`USER`/`LOGNAME`). Use for AI credentials such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Not needed when the CLI authenticates via files in `$HOME` (codex's `~/.codex`, or claude after `claude /login` writes to the macOS keychain — keychain access already works with the default `USER` passthrough). |
+| `REVIEWER_STREAM_IO` | off | When truthy (`1`/`true`/`yes`/`on`), the reviewer subprocess's stdout + stderr are mirrored to the bot's stderr in real time, in addition to being captured. The bot daemon leaves this off so PR review bodies don't bleed into systemd logs; `run-reviewer` turns it on so you can watch claude / codex type. |
+| `REVIEWER_HEARTBEAT_SEC` | `0` | When non-zero, prints `... reviewer: still working... NNs elapsed` to stderr every `N` seconds while the reviewer is running. 0 disables. `run-reviewer` defaults to `10` (suppressed when `REVIEWER_STREAM_IO=1`). Useful to surface "I'm not stuck" in long bot ticks. |
 | `MODMESH_BOT_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. |
 
 ## Testing the reviewer directly
@@ -430,6 +432,8 @@ modmesh-bot/
 │   ├── test_mention.cpp          word-boundary matching + login eq
 │   └── test_watcher.cpp          fake-driven auto + ping control flow
 ├── .env.example                  template for the .env at repo root (BOT_PAT, GITHUB_REPO, TEST_PR_NUMBER, …)
+├── tools/
+│   └── run_reviewer.cpp          standalone IReviewer driver (build/run-reviewer)
 ├── patches/
 │   └── modmesh-serializer-edge-cases.patch  modmesh JSON parser fixes (apply via scripts/apply_modmesh_patches.sh; see issue.md)
 ├── scripts/

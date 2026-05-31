@@ -61,6 +61,7 @@ const char * const k_all_vars[] = {
     "REVIEWER_KIND", "REVIEWER_MODEL", "REVIEWER_EFFORT",
     "REVIEWER_PROMPT", "REVIEWER_PROMPT_FILE",
     "REVIEWER_MOCK_EXIT_CODE", "REVIEWER_MOCK_OUTPUT",
+    "REVIEWER_STREAM_IO", "REVIEWER_HEARTBEAT_SEC",
     "GITHUB_API_BASE_URL",
 };
 
@@ -362,6 +363,67 @@ void test_reviewer_mock_output()
     EXPECT_EQ(c.reviewer_mock_output, std::string("fixed review text"));
 }
 
+// --- diagnostics knobs --------------------------------------------------
+
+void test_reviewer_stream_io_on()
+{
+    clear_env();
+    set_required_defaults();
+    for (const char * val : {"1", "true", "yes", "ON"})
+    {
+        ::setenv("REVIEWER_STREAM_IO", val, 1);
+        Config c = Config::from_env();
+        EXPECT(c.reviewer_stream_io);
+    }
+}
+
+void test_reviewer_stream_io_off()
+{
+    clear_env();
+    set_required_defaults();
+    for (const char * val : {"0", "false", "no", "off"})
+    {
+        ::setenv("REVIEWER_STREAM_IO", val, 1);
+        Config c = Config::from_env();
+        EXPECT(!c.reviewer_stream_io);
+    }
+}
+
+void test_reviewer_stream_io_invalid_rejected()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_STREAM_IO", "maybe", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
+                                  "REVIEWER_STREAM_IO"));
+}
+
+void test_reviewer_heartbeat_sec()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_HEARTBEAT_SEC", "15", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.reviewer_heartbeat_sec, 15);
+}
+
+void test_reviewer_heartbeat_sec_zero_means_off()
+{
+    clear_env();
+    set_required_defaults();
+    Config c = Config::from_env();
+    EXPECT_EQ(c.reviewer_heartbeat_sec, 0);
+}
+
+void test_reviewer_heartbeat_sec_out_of_range()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_HEARTBEAT_SEC", "5000", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
+                                  "REVIEWER_HEARTBEAT_SEC"));
+}
+
 // --- numeric env parsing ------------------------------------------------
 
 void test_poll_interval_zero_rejected()
@@ -497,6 +559,13 @@ int main()
     test_reviewer_mock_exit_code();
     test_reviewer_mock_exit_code_too_large_rejected();
     test_reviewer_mock_output();
+
+    test_reviewer_stream_io_on();
+    test_reviewer_stream_io_off();
+    test_reviewer_stream_io_invalid_rejected();
+    test_reviewer_heartbeat_sec();
+    test_reviewer_heartbeat_sec_zero_means_off();
+    test_reviewer_heartbeat_sec_out_of_range();
 
     test_poll_interval_zero_rejected();
     test_poll_interval_negative_rejected();

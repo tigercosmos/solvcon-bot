@@ -271,6 +271,23 @@ void apply_reviewer_env(Config & cfg)
     }
     cfg.reviewer_mock_output = env_or("REVIEWER_MOCK_OUTPUT", "");
 
+    // Operator-facing diagnostics. Both default off for the bot;
+    // run-reviewer overrides reviewer_stream_io=true on its own.
+    {
+        const std::string v = lc(env_or("REVIEWER_STREAM_IO", ""));
+        if (v == "1" || v == "true" || v == "yes" || v == "on")
+        {
+            cfg.reviewer_stream_io = true;
+        }
+        else if (!v.empty() && v != "0" && v != "false" && v != "no" && v != "off")
+        {
+            throw std::runtime_error(
+                "REVIEWER_STREAM_IO must be one of 1/0/true/false/yes/no/on/off");
+        }
+    }
+    cfg.reviewer_heartbeat_sec = env_int_or(
+        "REVIEWER_HEARTBEAT_SEC", cfg.reviewer_heartbeat_sec, 0, 3600);
+
     // Subprocess plumbing that the reviewer depends on. These match
     // the same env names used by the full bot config.
     constexpr int kIntMax = std::numeric_limits<int>::max();

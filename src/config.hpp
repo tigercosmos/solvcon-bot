@@ -63,11 +63,18 @@ struct Config
     std::vector<std::string> reviewer_env_passthrough;
 
     // When true, the reviewer subprocess's stdout + stderr are
-    // mirrored to the bot's stderr in real time. The bot daemon
-    // leaves this false (we don't want PR review bodies bleeding
-    // into systemd logs); run-reviewer sets it true so a human can
-    // watch claude / codex type.
+    // mirrored to the bot's stderr in real time. Set by run-reviewer
+    // unconditionally; the bot daemon honours the REVIEWER_STREAM_IO
+    // env var (default off — operators with structured logs usually
+    // don't want raw AI output interleaved).
     bool reviewer_stream_io = false;
+
+    // Interval (seconds) at which the reviewer emits a
+    // "reviewer heartbeat NNs" line to stderr while waiting for the
+    // child to return. 0 = off. Used by both the bot daemon (via
+    // REVIEWER_HEARTBEAT_SEC env) and run-reviewer (default 10s when
+    // stream_io is off).
+    int reviewer_heartbeat_sec = 0;
 
     static Config from_env();
 };

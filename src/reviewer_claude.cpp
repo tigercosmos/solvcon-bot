@@ -29,7 +29,8 @@ public:
                    std::size_t max_output_bytes,
                    int subprocess_timeout_sec,
                    std::vector<std::string> env_passthrough,
-                   bool stream_io)
+                   bool stream_io,
+                   int heartbeat_sec)
         : m_model(model.empty() ? std::string(kDefaultClaudeModel)
                                 : std::move(model))
         , m_effort(effort.empty() ? std::string(kDefaultClaudeEffort)
@@ -39,6 +40,7 @@ public:
         , m_subprocess_timeout_sec(subprocess_timeout_sec)
         , m_env_passthrough(std::move(env_passthrough))
         , m_stream_io(stream_io)
+        , m_heartbeat_sec(heartbeat_sec)
     {
     }
 
@@ -68,6 +70,12 @@ public:
 
     std::string run(const std::string & diff) override
     {
+        // Heartbeat is suppressed when stream_io is on (the streamed
+        // child output is itself the progress signal). Otherwise we
+        // fire every m_heartbeat_sec seconds, which is 0 for the bot
+        // daemon by default — operators opt in via env.
+        Heartbeat hb(m_stream_io ? 0 : m_heartbeat_sec,
+                     "modmesh-bot: claude reviewer");
         const ReviewerInvocation inv = build_invocation(diff);
         RunResult r;
         try
@@ -115,6 +123,7 @@ private:
     int m_subprocess_timeout_sec;
     std::vector<std::string> m_env_passthrough;
     bool m_stream_io;
+    int m_heartbeat_sec;
 };
 
 } // namespace
@@ -128,7 +137,8 @@ std::unique_ptr<IReviewer> make_claude_reviewer(const Config & cfg)
         cfg.max_output_bytes,
         cfg.subprocess_timeout_sec,
         cfg.reviewer_env_passthrough,
-        cfg.reviewer_stream_io);
+        cfg.reviewer_stream_io,
+        cfg.reviewer_heartbeat_sec);
 }
 
 // Test-only — symbol kept narrow so tests can construct + introspect
@@ -142,7 +152,8 @@ ReviewerInvocation claude_build_invocation_for_test(
                      cfg.max_output_bytes,
                      cfg.subprocess_timeout_sec,
                      cfg.reviewer_env_passthrough,
-                     cfg.reviewer_stream_io);
+                     cfg.reviewer_stream_io,
+                     cfg.reviewer_heartbeat_sec);
     return r.build_invocation(diff);
 }
 

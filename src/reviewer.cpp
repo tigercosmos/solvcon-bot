@@ -2,9 +2,17 @@
 
 #include "subprocess.hpp"
 
+#include <unistd.h>
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstring>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 
 namespace modmesh_bot
 {
@@ -63,6 +71,68 @@ std::string maybe_append_truncation_note(std::string body, bool truncated)
     return body;
 }
 
+// --- Heartbeat -----------------------------------------------------------
+
+struct Heartbeat::Impl
+{
+    int interval_sec;
+    std::string label;
+    std::chrono::steady_clock::time_point start;
+    std::atomic<bool> done{false};
+    std::mutex cv_mtx;
+    std::condition_variable cv;
+    std::thread thread;
+};
+
+Heartbeat::Heartbeat(int interval_sec, std::string label)
+    : m_impl(std::make_unique<Impl>())
+{
+    m_impl->interval_sec = interval_sec;
+    m_impl->label = std::move(label);
+    m_impl->start = std::chrono::steady_clock::now();
+    if (interval_sec <= 0) return;
+
+    m_impl->thread = std::thread([impl = m_impl.get()]() {
+        std::unique_lock<std::mutex> lk(impl->cv_mtx);
+        while (!impl->done.load())
+        {
+            if (impl->cv.wait_for(
+                    lk, std::chrono::seconds(impl->interval_sec),
+                    [impl]() { return impl->done.load(); }))
+            {
+                break;
+            }
+            const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - impl->start).count();
+            // Use ::write to skip stdio buffering — both binaries
+            // want the heartbeat to flush immediately. For the bot
+            // daemon this lands directly in whatever stderr is
+            // configured to (systemd journal / logfile / TTY).
+            std::string line = impl->label + ": still working... "
+                + std::to_string(elapsed) + "s elapsed\n";
+            const char * p = line.data();
+            ssize_t left = static_cast<ssize_t>(line.size());
+            while (left > 0)
+            {
+                ssize_t w = ::write(STDERR_FILENO, p, left);
+                if (w <= 0) break;
+                left -= w; p += w;
+            }
+        }
+    });
+}
+
+Heartbeat::~Heartbeat()
+{
+    if (!m_impl) return;
+    {
+        std::lock_guard<std::mutex> lk(m_impl->cv_mtx);
+        m_impl->done.store(true);
+    }
+    m_impl->cv.notify_all();
+    if (m_impl->thread.joinable()) m_impl->thread.join();
+}
+
 // -------------------------------------------------------------------
 // MockReviewer
 //
@@ -83,13 +153,15 @@ public:
                  std::size_t max_output_bytes,
                  int subprocess_timeout_sec,
                  std::vector<std::string> env_passthrough,
-                 bool stream_io)
+                 bool stream_io,
+                 int heartbeat_sec)
         : m_exit_code(exit_code)
         , m_output(std::move(output))
         , m_max_output_bytes(max_output_bytes)
         , m_subprocess_timeout_sec(subprocess_timeout_sec)
         , m_env_passthrough(std::move(env_passthrough))
         , m_stream_io(stream_io)
+        , m_heartbeat_sec(heartbeat_sec)
     {
     }
 
@@ -97,6 +169,12 @@ public:
 
     std::string run(const std::string & diff) override
     {
+        // Streaming the mock's stdout is the heartbeat for free, so
+        // skip the timer thread when stream_io is on. Likewise mock
+        // is fast — heartbeat almost never fires for it — but we
+        // still respect the operator's config for symmetry.
+        Heartbeat hb(m_stream_io ? 0 : m_heartbeat_sec,
+                     "modmesh-bot: mock reviewer");
         // Build the argv + stdin we want the child to see. For the
         // happy path (exit_code == 0, no override output), we use
         // /bin/cat and pipe the diff through. For an override output,
@@ -169,6 +247,7 @@ private:
     int m_subprocess_timeout_sec;
     std::vector<std::string> m_env_passthrough;
     bool m_stream_io;
+    int m_heartbeat_sec;
 };
 
 } // namespace
@@ -181,7 +260,8 @@ std::unique_ptr<IReviewer> make_mock_reviewer(const Config & cfg)
         cfg.max_output_bytes,
         cfg.subprocess_timeout_sec,
         cfg.reviewer_env_passthrough,
-        cfg.reviewer_stream_io);
+        cfg.reviewer_stream_io,
+        cfg.reviewer_heartbeat_sec);
 }
 
 } // namespace modmesh_bot

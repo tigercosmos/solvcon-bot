@@ -66,4 +66,25 @@ std::string assemble_review_stdin(const std::string & prompt,
 // No-op when not truncated.
 std::string maybe_append_truncation_note(std::string body, bool truncated);
 
+// RAII heartbeat: when constructed with interval_sec > 0, spawns a
+// background thread that writes a one-line "still working ... NNs"
+// status to STDERR_FILENO every interval_sec seconds with `label` as
+// a prefix. The thread is signalled and joined in the destructor.
+// interval_sec <= 0 is a no-op — no thread is created. Used by every
+// reviewer's run() so both the bot daemon and run-reviewer can
+// surface "I'm not stuck" while the AI CLI is thinking.
+class Heartbeat
+{
+public:
+    Heartbeat(int interval_sec, std::string label);
+    ~Heartbeat();
+
+    Heartbeat(const Heartbeat &) = delete;
+    Heartbeat & operator=(const Heartbeat &) = delete;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
+};
+
 } // namespace modmesh_bot

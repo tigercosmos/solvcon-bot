@@ -21,16 +21,12 @@
 #include "config.hpp"
 #include "reviewer.hpp"
 
-#include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <fstream>
 #include <iostream>
 #include <memory>
-#include <mutex>
 #include <sstream>
 #include <string>
-#include <thread>
 
 namespace
 {
@@ -57,8 +53,13 @@ void print_usage(std::ostream & os)
        << "  REVIEWER_MOCK_EXIT_CODE non-zero forces mock to fail (e2e helper)\n"
        << "  REVIEWER_MOCK_OUTPUT   if set, mock prints this instead of echoing\n"
        << "  REVIEWER_ENV_PASSTHROUGH comma-separated env-var names\n"
+       << "  REVIEWER_STREAM_IO     1/true/yes/on -> mirror child stdout/stderr live\n"
+       << "  REVIEWER_HEARTBEAT_SEC seconds between 'still working' lines (0 = off)\n"
        << "  MAX_OUTPUT_BYTES       (default 60000)\n"
        << "  SUBPROCESS_TIMEOUT_SEC (default 300)\n"
+       << "\n"
+       << "This tool's defaults: REVIEWER_STREAM_IO=on, REVIEWER_HEARTBEAT_SEC=10.\n"
+       << "Override either by setting the env var explicitly.\n"
        << "\n"
        << "Exit codes: 0 success, 1 reviewer error, 2 usage / setup error.\n";
 }
@@ -87,13 +88,22 @@ int main(int argc, char ** argv)
         // Reuse the production env loader for the reviewer block so
         // numeric validation, prompt-file size cap, effort whitelist,
         // and the REVIEWER_ARGV migration-error all behave identically
-        // to the bot.
+        // to the bot. After it runs, any env var the operator set
+        // takes effect; below we set tool-specific defaults only when
+        // the env left the field at Config's compiled-in default.
         modmesh_bot::apply_reviewer_env(cfg);
 
-        // Standalone tool wants to watch the AI CLI work in real time;
-        // the bot daemon doesn't (its stderr would otherwise carry the
-        // PR review body into the systemd journal).
-        cfg.reviewer_stream_io = true;
+        // run-reviewer is interactive — humans watching want both
+        // streaming and a heartbeat. apply_reviewer_env may have
+        // already set them via env; only fill in when unset.
+        if (!std::getenv("REVIEWER_STREAM_IO"))
+        {
+            cfg.reviewer_stream_io = true;
+        }
+        if (cfg.reviewer_heartbeat_sec == 0 && !std::getenv("REVIEWER_HEARTBEAT_SEC"))
+        {
+            cfg.reviewer_heartbeat_sec = 10;
+        }
 
         if (from_file)
         {
@@ -139,6 +149,7 @@ int main(int argc, char ** argv)
               << " diff_bytes=" << diff.size()
               << " timeout=" << cfg.subprocess_timeout_sec << "s"
               << " stream_io=" << (cfg.reviewer_stream_io ? "on" : "off")
+              << " heartbeat_sec=" << cfg.reviewer_heartbeat_sec
               << std::endl;
     if (cfg.reviewer_stream_io
         && (cfg.reviewer_kind == modmesh_bot::ReviewerKind::Claude
@@ -150,50 +161,15 @@ int main(int argc, char ** argv)
                   << std::endl;
     }
 
-    // Heartbeat thread: prints elapsed time every 10s to stderr so the
-    // tool doesn't look hung. We skip it when stream_io is on — the
-    // streamed child output is the better progress signal and a
-    // heartbeat would interleave with it.
     const auto start = std::chrono::steady_clock::now();
-    std::atomic<bool> done{false};
-    std::mutex cv_mtx;
-    std::condition_variable cv;
-    std::thread heartbeat;
-    if (!cfg.reviewer_stream_io
-        && (cfg.reviewer_kind == modmesh_bot::ReviewerKind::Claude
-            || cfg.reviewer_kind == modmesh_bot::ReviewerKind::Codex))
-    {
-        heartbeat = std::thread([&]() {
-            std::unique_lock<std::mutex> lk(cv_mtx);
-            while (!done.load())
-            {
-                if (cv.wait_for(lk, std::chrono::seconds(10),
-                                [&]() { return done.load(); }))
-                {
-                    break;
-                }
-                const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::steady_clock::now() - start).count();
-                std::cerr << "run-reviewer: still working... " << elapsed
-                          << "s elapsed" << std::endl;
-            }
-        });
-    }
-
-    auto stop_heartbeat = [&]() {
-        {
-            std::lock_guard<std::mutex> lk(cv_mtx);
-            done.store(true);
-        }
-        cv.notify_all();
-        if (heartbeat.joinable()) heartbeat.join();
-    };
-
     int rc = 0;
     std::string out;
     std::string err_msg;
     try
     {
+        // The Reviewer instance owns the heartbeat thread internally
+        // (see Heartbeat in reviewer.hpp). No more user-space thread
+        // management here.
         out = rv->run(diff);
     }
     catch (const std::exception & e)
@@ -201,8 +177,6 @@ int main(int argc, char ** argv)
         err_msg = e.what();
         rc = 1;
     }
-    stop_heartbeat();
-
     const auto total = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start).count();
 
