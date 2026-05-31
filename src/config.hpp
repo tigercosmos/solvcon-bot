@@ -71,6 +71,14 @@ ReviewerKind parse_reviewer_kind(const std::string & s);
 
 const char * to_string(ReviewerKind k);
 
+// Load just the reviewer-related fields (kind, model, effort, prompt,
+// mock knobs, env passthrough, the subprocess output cap, timeout)
+// from the bot's environment into `cfg`. Used by Config::from_env()
+// and by the standalone `run-reviewer` tool. Hard-fails if the
+// removed REVIEWER_ARGV is still set, and validates effort + the
+// prompt-file size cap the same way production does.
+void apply_reviewer_env(Config & cfg);
+
 inline std::ostream & operator<<(std::ostream & os, ReviewerKind k)
 {
     return os << to_string(k);

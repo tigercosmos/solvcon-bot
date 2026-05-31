@@ -145,6 +145,45 @@ Optional:
 | `REVIEWER_ENV_PASSTHROUGH` | empty | Comma-separated list of env-var names to pass through to the reviewer subprocess on top of the defaults (`PATH`/`HOME`/`LANG`/`TERM`/`USER`/`LOGNAME`). Use for AI credentials such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Not needed when the CLI authenticates via files in `$HOME` (codex's `~/.codex`, or claude after `claude /login` writes to the macOS keychain — keychain access already works with the default `USER` passthrough). |
 | `MODMESH_BOT_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. |
 
+## Testing the reviewer directly
+
+`make build` also produces `build/run-reviewer`, a standalone driver
+that reads a diff from stdin (or a file path) and prints whatever the
+configured `IReviewer` would post as a PR comment. Same env vars as
+the bot — `REVIEWER_KIND`, `REVIEWER_MODEL`, `REVIEWER_EFFORT`,
+`REVIEWER_PROMPT`, `REVIEWER_PROMPT_FILE`, `REVIEWER_MOCK_*`,
+`REVIEWER_ENV_PASSTHROUGH`. None of `GITHUB_TOKEN` / `GITHUB_REPO` /
+`BOT_HANDLE` is required.
+
+```bash
+make build
+
+# Mock — echoes the diff back (free, no AI).
+git diff HEAD~3 HEAD | ./build/run-reviewer
+
+# Claude with the defaults (claude-opus-4-8, high effort).
+git diff HEAD~3 HEAD | REVIEWER_KIND=claude ./build/run-reviewer
+
+# Try a different model + a custom prompt without running the bot.
+git diff main...HEAD \
+  | REVIEWER_KIND=claude \
+    REVIEWER_MODEL=claude-sonnet-4-6 \
+    REVIEWER_PROMPT="Review just for security bugs. One bullet per issue." \
+    ./build/run-reviewer
+
+# Codex on a file.
+./build/run-reviewer my-experiment.diff   # set REVIEWER_KIND=codex first
+
+# --help shows the env-var matrix.
+./build/run-reviewer --help
+```
+
+Exit codes: `0` on success (reviewer printed a body to stdout), `1` on
+reviewer error (timeout, non-zero exit, etc.), `2` on setup error
+(bad env, missing input, etc.). All diagnostics go to stderr so you
+can pipe `stdout` straight to a file or another tool. The tool does
+*not* enforce `MAX_DIFF_BYTES` — it's a debug driver.
+
 ## Reviewer kinds
 
 `REVIEWER_KIND` selects which subclass of `IReviewer` the factory

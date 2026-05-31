@@ -217,15 +217,8 @@ const char * to_string(ReviewerKind k)
     return "?";
 }
 
-Config Config::from_env()
+void apply_reviewer_env(Config & cfg)
 {
-    Config cfg;
-    cfg.github_token = require_env("GITHUB_TOKEN");
-    auto [owner, repo] = split_owner_repo(require_env("GITHUB_REPO"));
-    cfg.github_owner = std::move(owner);
-    cfg.github_repo = std::move(repo);
-    cfg.bot_handle = require_env("BOT_HANDLE");
-
     // Fail-loud if a stale `REVIEWER_ARGV` is carried over from the
     // pre-redesign config. Silently ignoring it would mean the bot
     // defaults to REVIEWER_KIND=mock and posts diff-echo "reviews"
@@ -238,9 +231,7 @@ Config Config::from_env()
             "See .env.example.");
     }
 
-    // Reviewer block.
-    cfg.reviewer_kind = parse_reviewer_kind(
-        env_or("REVIEWER_KIND", "mock"));
+    cfg.reviewer_kind = parse_reviewer_kind(env_or("REVIEWER_KIND", "mock"));
     cfg.reviewer_model = env_or("REVIEWER_MODEL", "");
     cfg.reviewer_effort = env_or("REVIEWER_EFFORT", "");
     validate_reviewer_effort(cfg.reviewer_effort);
@@ -280,6 +271,32 @@ Config Config::from_env()
     }
     cfg.reviewer_mock_output = env_or("REVIEWER_MOCK_OUTPUT", "");
 
+    // Subprocess plumbing that the reviewer depends on. These match
+    // the same env names used by the full bot config.
+    constexpr int kIntMax = std::numeric_limits<int>::max();
+    constexpr std::size_t kSizeMax = std::numeric_limits<std::size_t>::max();
+    cfg.max_output_bytes = env_size_or("MAX_OUTPUT_BYTES", cfg.max_output_bytes, 1, kSizeMax);
+    cfg.subprocess_timeout_sec = env_int_or(
+        "SUBPROCESS_TIMEOUT_SEC", cfg.subprocess_timeout_sec, 1, kIntMax);
+
+    if (const char * v = std::getenv("REVIEWER_ENV_PASSTHROUGH");
+        v != nullptr && *v != '\0')
+    {
+        cfg.reviewer_env_passthrough = parse_csv_names(v);
+    }
+}
+
+Config Config::from_env()
+{
+    Config cfg;
+    cfg.github_token = require_env("GITHUB_TOKEN");
+    auto [owner, repo] = split_owner_repo(require_env("GITHUB_REPO"));
+    cfg.github_owner = std::move(owner);
+    cfg.github_repo = std::move(repo);
+    cfg.bot_handle = require_env("BOT_HANDLE");
+
+    apply_reviewer_env(cfg);
+
     constexpr int kIntMax = std::numeric_limits<int>::max();
     constexpr std::size_t kSizeMax = std::numeric_limits<std::size_t>::max();
 
@@ -287,17 +304,9 @@ Config Config::from_env()
     cfg.state_file = env_or("STATE_FILE", cfg.state_file);
     cfg.github_api_base_url = env_or("GITHUB_API_BASE_URL", cfg.github_api_base_url);
     cfg.max_diff_bytes = env_size_or("MAX_DIFF_BYTES", cfg.max_diff_bytes, 1, kSizeMax);
-    cfg.max_output_bytes = env_size_or("MAX_OUTPUT_BYTES", cfg.max_output_bytes, 1, kSizeMax);
-    cfg.subprocess_timeout_sec = env_int_or("SUBPROCESS_TIMEOUT_SEC", cfg.subprocess_timeout_sec, 1, kIntMax);
     cfg.http_connect_timeout_sec = env_int_or("HTTP_CONNECT_TIMEOUT_SEC", cfg.http_connect_timeout_sec, 1, kIntMax);
     cfg.http_read_timeout_sec = env_int_or("HTTP_READ_TIMEOUT_SEC", cfg.http_read_timeout_sec, 1, kIntMax);
     cfg.http_write_timeout_sec = env_int_or("HTTP_WRITE_TIMEOUT_SEC", cfg.http_write_timeout_sec, 1, kIntMax);
-
-    if (const char * v = std::getenv("REVIEWER_ENV_PASSTHROUGH");
-        v != nullptr && *v != '\0')
-    {
-        cfg.reviewer_env_passthrough = parse_csv_names(v);
-    }
 
     return cfg;
 }

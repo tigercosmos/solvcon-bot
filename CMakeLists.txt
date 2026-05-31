@@ -57,5 +57,12 @@ add_executable(modmesh-bot src/main.cpp)
 target_compile_options(modmesh-bot PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(modmesh-bot PRIVATE modmesh-bot-lib)
 
+# Standalone reviewer driver: feed a diff on stdin (or via a file
+# arg) and the configured IReviewer prints its review to stdout.
+# Useful for prompt iteration without GitHub round-trips.
+add_executable(run-reviewer src/run_reviewer.cpp)
+target_compile_options(run-reviewer PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(run-reviewer PRIVATE modmesh-bot-lib)
+
 enable_testing()
 add_subdirectory(tests)
