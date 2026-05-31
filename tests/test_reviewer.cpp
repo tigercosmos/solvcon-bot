@@ -151,32 +151,43 @@ void test_mock_forced_failure_throws()
 
 // --- ClaudeReviewer (introspect only; no spawn) --------------------------
 
-void test_claude_invocation_minimal()
+void test_claude_invocation_minimal_uses_defaults()
 {
+    // Empty REVIEWER_MODEL + REVIEWER_EFFORT must inject the class
+    // defaults: claude-opus-4-8 + high. The bot ships an explicit
+    // model/effort to claude on EVERY invocation; the operator opts
+    // OUT by setting these env vars to a different value.
     Config c = make_cfg(ReviewerKind::Claude);
     auto inv = mb::claude_build_invocation_for_test(c, "diff bytes");
-    // argv: claude -p (no --model since none set)
-    EXPECT_EQ(inv.argv.size(), static_cast<std::size_t>(2));
+    // argv: claude -p --model claude-opus-4-8
+    EXPECT_EQ(inv.argv.size(), static_cast<std::size_t>(4));
     EXPECT_EQ(inv.argv[0], std::string("claude"));
     EXPECT_EQ(inv.argv[1], std::string("-p"));
+    EXPECT_EQ(inv.argv[2], std::string("--model"));
+    EXPECT_EQ(inv.argv[3], std::string("claude-opus-4-8"));
     // stdin includes the default prompt + diff block
     EXPECT(inv.stdin_input.find(mb::default_review_prompt()) == 0);
     EXPECT(inv.stdin_input.find("diff bytes") != std::string::npos);
-    // No env_values when effort isn't configured
-    EXPECT(inv.env_values.empty());
+    // CLAUDE_EFFORT defaults to high.
+    EXPECT_EQ(inv.env_values.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(inv.env_values[0].first, std::string("CLAUDE_EFFORT"));
+    EXPECT_EQ(inv.env_values[0].second, std::string("high"));
 }
 
-void test_claude_invocation_model_flag()
+void test_claude_invocation_model_override()
 {
     Config c = make_cfg(ReviewerKind::Claude);
-    c.reviewer_model = "claude-opus-4-7";
+    c.reviewer_model = "claude-sonnet-4-6";
     auto inv = mb::claude_build_invocation_for_test(c, "x");
     EXPECT_EQ(inv.argv.size(), static_cast<std::size_t>(4));
     EXPECT_EQ(inv.argv[2], std::string("--model"));
-    EXPECT_EQ(inv.argv[3], std::string("claude-opus-4-7"));
+    EXPECT_EQ(inv.argv[3], std::string("claude-sonnet-4-6"));
+    // Effort still defaults.
+    EXPECT_EQ(inv.env_values.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(inv.env_values[0].second, std::string("high"));
 }
 
-void test_claude_effort_sets_env_var()
+void test_claude_effort_override()
 {
     Config c = make_cfg(ReviewerKind::Claude);
     c.reviewer_effort = "xhigh";
@@ -184,6 +195,8 @@ void test_claude_effort_sets_env_var()
     EXPECT_EQ(inv.env_values.size(), static_cast<std::size_t>(1));
     EXPECT_EQ(inv.env_values[0].first, std::string("CLAUDE_EFFORT"));
     EXPECT_EQ(inv.env_values[0].second, std::string("xhigh"));
+    // Model still defaults.
+    EXPECT_EQ(inv.argv[3], std::string("claude-opus-4-8"));
 }
 
 void test_claude_custom_prompt_replaces_default()
@@ -206,30 +219,33 @@ void test_claude_env_passthrough_threaded()
 
 // --- CodexReviewer (introspect only) -------------------------------------
 
-void test_codex_invocation_minimal()
+void test_codex_invocation_minimal_uses_defaults()
 {
+    // Empty REVIEWER_MODEL + REVIEWER_EFFORT must inject the class
+    // defaults: gpt-5.5 + high.
     Config c = make_cfg(ReviewerKind::Codex);
     auto inv = mb::codex_build_invocation_for_test(c, "diff bytes");
-    EXPECT_EQ(inv.argv.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(inv.argv.size(), static_cast<std::size_t>(6));
     EXPECT_EQ(inv.argv[0], std::string("codex"));
     EXPECT_EQ(inv.argv[1], std::string("exec"));
+    EXPECT_EQ(inv.argv[2], std::string("--model"));
+    EXPECT_EQ(inv.argv[3], std::string("gpt-5.5"));
+    EXPECT_EQ(inv.argv[4], std::string("-c"));
+    EXPECT_EQ(inv.argv[5], std::string("reasoning.effort=high"));
     EXPECT(inv.stdin_input.find("BEGIN_DIFF") != std::string::npos);
+    // codex receives effort via argv, NOT as an env var.
+    EXPECT(inv.env_values.empty());
 }
 
-void test_codex_invocation_model_and_effort()
+void test_codex_invocation_overrides()
 {
     Config c = make_cfg(ReviewerKind::Codex);
     c.reviewer_model = "gpt-5";
-    c.reviewer_effort = "high";
+    c.reviewer_effort = "xhigh";
     auto inv = mb::codex_build_invocation_for_test(c, "x");
-    // codex exec --model gpt-5 -c reasoning.effort=high
     EXPECT_EQ(inv.argv.size(), static_cast<std::size_t>(6));
-    EXPECT_EQ(inv.argv[2], std::string("--model"));
     EXPECT_EQ(inv.argv[3], std::string("gpt-5"));
-    EXPECT_EQ(inv.argv[4], std::string("-c"));
-    EXPECT_EQ(inv.argv[5], std::string("reasoning.effort=high"));
-    // codex receives effort via argv, NOT as an env var.
-    EXPECT(inv.env_values.empty());
+    EXPECT_EQ(inv.argv[5], std::string("reasoning.effort=xhigh"));
 }
 
 // --- factory dispatch ----------------------------------------------------
@@ -271,14 +287,14 @@ int main()
     test_mock_fixed_output_overrides_diff();
     test_mock_forced_failure_throws();
 
-    test_claude_invocation_minimal();
-    test_claude_invocation_model_flag();
-    test_claude_effort_sets_env_var();
+    test_claude_invocation_minimal_uses_defaults();
+    test_claude_invocation_model_override();
+    test_claude_effort_override();
     test_claude_custom_prompt_replaces_default();
     test_claude_env_passthrough_threaded();
 
-    test_codex_invocation_minimal();
-    test_codex_invocation_model_and_effort();
+    test_codex_invocation_minimal_uses_defaults();
+    test_codex_invocation_overrides();
 
     test_factory_dispatches_by_kind();
     test_parse_reviewer_kind();

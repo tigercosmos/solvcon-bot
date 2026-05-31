@@ -14,6 +14,12 @@ namespace modmesh_bot
 namespace
 {
 
+// Per-kind defaults. Empty REVIEWER_MODEL / REVIEWER_EFFORT in the
+// config means "use these"; the operator can still override either by
+// setting the matching env var to anything non-empty.
+constexpr const char * kDefaultClaudeModel = "claude-opus-4-8";
+constexpr const char * kDefaultClaudeEffort = "high";
+
 class ClaudeReviewer final : public IReviewer
 {
 public:
@@ -23,8 +29,10 @@ public:
                    std::size_t max_output_bytes,
                    int subprocess_timeout_sec,
                    std::vector<std::string> env_passthrough)
-        : m_model(std::move(model))
-        , m_effort(std::move(effort))
+        : m_model(model.empty() ? std::string(kDefaultClaudeModel)
+                                : std::move(model))
+        , m_effort(effort.empty() ? std::string(kDefaultClaudeEffort)
+                                  : std::move(effort))
         , m_prompt(prompt.empty() ? default_review_prompt() : std::move(prompt))
         , m_max_output_bytes(max_output_bytes)
         , m_subprocess_timeout_sec(subprocess_timeout_sec)

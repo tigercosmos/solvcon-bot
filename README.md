@@ -123,8 +123,8 @@ All configuration comes from environment variables. Required:
 | `GITHUB_REPO` | `owner/name`, e.g. `solvcon/modmesh`. |
 | `BOT_HANDLE` | The bot's GitHub username, without the `@`. |
 | `REVIEWER_KIND` | One of `mock`, `claude`, `codex` (default `mock`). Selects the reviewer class — see "Reviewer kinds" below. Each kind spawns its own CLI; the bot prepends a built-in review prompt and pipes the diff to its stdin. |
-| `REVIEWER_MODEL` | Optional. Passed as `--model NAME` to `claude` / `codex`. Empty means the CLI's own default. |
-| `REVIEWER_EFFORT` | Optional. For claude, exported as `CLAUDE_EFFORT` in the child env. For codex, passed as `-c reasoning.effort=$EFFORT`. Values like `minimal`/`low`/`medium`/`high`/`xhigh`. |
+| `REVIEWER_MODEL` | Optional. Passed as `--model NAME` to `claude` / `codex`. Empty falls back to a per-kind default: **`claude-opus-4-8`** for `claude`, **`gpt-5.5`** for `codex`. |
+| `REVIEWER_EFFORT` | Optional. For claude, exported as `CLAUDE_EFFORT` in the child env. For codex, passed as `-c reasoning.effort=$EFFORT`. Empty falls back to **`high`** for both kinds. Other values: `minimal`/`low`/`medium`/`xhigh`. |
 | `REVIEWER_PROMPT` | Optional literal prompt that replaces the built-in preamble. Mutually exclusive with `REVIEWER_PROMPT_FILE`. |
 | `REVIEWER_PROMPT_FILE` | Optional path whose contents replace the built-in preamble. |
 | `REVIEWER_MOCK_EXIT_CODE` | Mock-only. Non-zero forces the mock to write to stderr and exit with this code. Used by e2e-failure. |
@@ -152,11 +152,11 @@ builds. The selection is fixed at startup. All three kinds share the
 same subprocess plumbing — sanitized env, output cap, timeout — and
 differ only in which CLI they spawn and how they shape the prompt.
 
-| Kind | What it spawns | Used for |
-|---|---|---|
-| `mock` | `/bin/cat` (echoes the diff, no AI) or `/bin/sh -c 'exit N'` when `REVIEWER_MOCK_EXIT_CODE` is non-zero | Default. Deterministic and free; perfect for e2e of the bot pipeline without spending AI tokens. |
-| `claude` | `claude -p [--model $REVIEWER_MODEL]`, with `CLAUDE_EFFORT=$REVIEWER_EFFORT` injected into the child env when set | Real reviews via Anthropic Claude. The bot prepends a built-in review prompt to the diff and pipes the combined buffer to claude's stdin. |
-| `codex` | `codex exec [--model $REVIEWER_MODEL] [-c reasoning.effort=$REVIEWER_EFFORT]` | Real reviews via OpenAI Codex. Same prompt-then-diff stdin shape. |
+| Kind | What it spawns | Default model / effort | Used for |
+|---|---|---|---|
+| `mock` | `/bin/cat` (echoes the diff, no AI) or `/bin/sh -c 'exit N'` when `REVIEWER_MOCK_EXIT_CODE` is non-zero | — | Default. Deterministic and free; perfect for e2e of the bot pipeline without spending AI tokens. |
+| `claude` | `claude -p --model $REVIEWER_MODEL` with `CLAUDE_EFFORT=$REVIEWER_EFFORT` in the child env | `claude-opus-4-8` / `high` | Real reviews via Anthropic Claude. The bot prepends a built-in review prompt to the diff and pipes the combined buffer to claude's stdin. |
+| `codex` | `codex exec --model $REVIEWER_MODEL -c reasoning.effort=$REVIEWER_EFFORT` | `gpt-5.5` / `high` | Real reviews via OpenAI Codex. Same prompt-then-diff stdin shape. |
 
 The built-in review prompt is in `default_review_prompt()` (`src/reviewer.cpp`).
 Override per-deployment with `REVIEWER_PROMPT` (literal) or

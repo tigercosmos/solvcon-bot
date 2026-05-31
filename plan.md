@@ -222,8 +222,8 @@ Outgoing JSON (e.g. `{"body": "..."}`) emitted via
 | `GITHUB_REPO` | yes | — | e.g. `tigercosmos/modmesh` |
 | `BOT_HANDLE` | yes | — | bot's GitHub username, no `@` |
 | `REVIEWER_KIND` | no | `mock` | One of `mock`/`claude`/`codex`. Selects the IReviewer subclass at startup. |
-| `REVIEWER_MODEL` | no | — | Optional model name forwarded to the AI CLI via `--model`. |
-| `REVIEWER_EFFORT` | no | — | For `claude`: exported as `CLAUDE_EFFORT` to the child. For `codex`: passed as `-c reasoning.effort=$value`. |
+| `REVIEWER_MODEL` | no | per-kind | Forwarded as `--model` to the AI CLI. Empty falls back to `claude-opus-4-8` (kind=claude) or `gpt-5.5` (kind=codex). |
+| `REVIEWER_EFFORT` | no | `high` | For `claude`: exported as `CLAUDE_EFFORT` to the child. For `codex`: passed as `-c reasoning.effort=$value`. Empty falls back to `high` for both. |
 | `REVIEWER_PROMPT` | no | (built-in) | Literal prompt that replaces the built-in review preamble. Mutually exclusive with `REVIEWER_PROMPT_FILE`. |
 | `REVIEWER_PROMPT_FILE` | no | (built-in) | Path whose contents replace the built-in preamble. |
 | `REVIEWER_MOCK_EXIT_CODE` | no | `0` | Mock-only. Non-zero makes the mock exit with this code (forced-failure tests). |
