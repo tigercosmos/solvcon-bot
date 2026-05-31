@@ -21,11 +21,16 @@
 #include "config.hpp"
 #include "reviewer.hpp"
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 
 namespace
 {
@@ -85,6 +90,11 @@ int main(int argc, char ** argv)
         // to the bot.
         modmesh_bot::apply_reviewer_env(cfg);
 
+        // Standalone tool wants to watch the AI CLI work in real time;
+        // the bot daemon doesn't (its stderr would otherwise carry the
+        // PR review body into the systemd journal).
+        cfg.reviewer_stream_io = true;
+
         if (from_file)
         {
             std::ifstream ifs(argv[1]);
@@ -126,18 +136,93 @@ int main(int argc, char ** argv)
     }
 
     std::cerr << "run-reviewer: kind=" << to_string(cfg.reviewer_kind)
-              << " diff_bytes=" << diff.size() << std::endl;
+              << " diff_bytes=" << diff.size()
+              << " timeout=" << cfg.subprocess_timeout_sec << "s"
+              << " stream_io=" << (cfg.reviewer_stream_io ? "on" : "off")
+              << std::endl;
+    if (cfg.reviewer_stream_io
+        && (cfg.reviewer_kind == modmesh_bot::ReviewerKind::Claude
+            || cfg.reviewer_kind == modmesh_bot::ReviewerKind::Codex))
+    {
+        std::cerr << "run-reviewer: streaming child stdout/stderr below "
+                     "(reviewer output appears live). Full body is also "
+                     "captured and re-printed on stdout when done."
+                  << std::endl;
+    }
 
+    // Heartbeat thread: prints elapsed time every 10s to stderr so the
+    // tool doesn't look hung. We skip it when stream_io is on — the
+    // streamed child output is the better progress signal and a
+    // heartbeat would interleave with it.
+    const auto start = std::chrono::steady_clock::now();
+    std::atomic<bool> done{false};
+    std::mutex cv_mtx;
+    std::condition_variable cv;
+    std::thread heartbeat;
+    if (!cfg.reviewer_stream_io
+        && (cfg.reviewer_kind == modmesh_bot::ReviewerKind::Claude
+            || cfg.reviewer_kind == modmesh_bot::ReviewerKind::Codex))
+    {
+        heartbeat = std::thread([&]() {
+            std::unique_lock<std::mutex> lk(cv_mtx);
+            while (!done.load())
+            {
+                if (cv.wait_for(lk, std::chrono::seconds(10),
+                                [&]() { return done.load(); }))
+                {
+                    break;
+                }
+                const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - start).count();
+                std::cerr << "run-reviewer: still working... " << elapsed
+                          << "s elapsed" << std::endl;
+            }
+        });
+    }
+
+    auto stop_heartbeat = [&]() {
+        {
+            std::lock_guard<std::mutex> lk(cv_mtx);
+            done.store(true);
+        }
+        cv.notify_all();
+        if (heartbeat.joinable()) heartbeat.join();
+    };
+
+    int rc = 0;
+    std::string out;
+    std::string err_msg;
     try
     {
-        std::string out = rv->run(diff);
+        out = rv->run(diff);
+    }
+    catch (const std::exception & e)
+    {
+        err_msg = e.what();
+        rc = 1;
+    }
+    stop_heartbeat();
+
+    const auto total = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    if (rc == 0)
+    {
+        std::cerr << "run-reviewer: done in " << total << "s, "
+                  << out.size() << " bytes" << std::endl;
+        if (cfg.reviewer_stream_io)
+        {
+            std::cerr << "run-reviewer: ---- captured review body on stdout ----"
+                      << std::endl;
+        }
         std::cout << out;
         if (out.empty() || out.back() != '\n') std::cout << '\n';
         return 0;
     }
-    catch (const std::exception & e)
+    else
     {
-        std::cerr << "run-reviewer error: " << e.what() << std::endl;
-        return 1;
+        std::cerr << "run-reviewer: error after " << total << "s: "
+                  << err_msg << std::endl;
+        return rc;
     }
 }

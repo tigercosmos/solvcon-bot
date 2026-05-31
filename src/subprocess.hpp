@@ -38,6 +38,14 @@ struct RunResult
 // the operator at startup rather than inherited. Values here OVERRIDE
 // allowlist-passthrough entries with the same key.
 //
+// `tee_child_io_to_stderr`: when true, every chunk the child writes
+// to its stdout or stderr is mirrored to the PARENT's stderr in real
+// time as it arrives, in addition to being accumulated into the
+// stdout_buf / stderr_buf return fields. Useful when the parent is a
+// human-facing tool (e.g. run-reviewer) where seeing the AI CLI's
+// output incrementally is more important than clean stream
+// separation. The bot itself leaves this false.
+//
 // The diff itself is never put on argv or env.
 //
 // argv[0] must name the executable; passed to execvp so PATH resolution
@@ -51,6 +59,7 @@ RunResult run_subprocess(
     std::size_t max_output_bytes,
     int timeout_seconds,
     const std::vector<std::string> & extra_env_allowlist = {},
-    const std::vector<std::pair<std::string, std::string>> & extra_env_values = {});
+    const std::vector<std::pair<std::string, std::string>> & extra_env_values = {},
+    bool tee_child_io_to_stderr = false);
 
 } // namespace modmesh_bot

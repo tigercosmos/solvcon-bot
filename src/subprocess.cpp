@@ -202,7 +202,8 @@ RunResult run_subprocess(
     std::size_t max_output_bytes,
     int timeout_seconds,
     const std::vector<std::string> & extra_env_allowlist,
-    const std::vector<std::pair<std::string, std::string>> & extra_env_values)
+    const std::vector<std::pair<std::string, std::string>> & extra_env_values,
+    bool tee_child_io_to_stderr)
 {
     if (argv.empty())
     {
@@ -417,6 +418,24 @@ RunResult run_subprocess(
                     ssize_t n = ::read(fd, buf, sizeof(buf));
                     if (n > 0)
                     {
+                        if (tee_child_io_to_stderr)
+                        {
+                            // Mirror to the parent's stderr in real
+                            // time so a human-facing caller can watch
+                            // the AI CLI's output land. We use ::write
+                            // (not std::cerr) to skip stdio buffering;
+                            // ignore short writes / errors — this is
+                            // best-effort instrumentation.
+                            ssize_t left = n;
+                            const char * p = buf;
+                            while (left > 0)
+                            {
+                                ssize_t w = ::write(STDERR_FILENO, p, left);
+                                if (w <= 0) break;
+                                left -= w;
+                                p += w;
+                            }
+                        }
                         append_capped(dst, trunc, buf, static_cast<std::size_t>(n),
                                       max_output_bytes);
                         continue;

@@ -82,12 +82,14 @@ public:
                  std::string output,
                  std::size_t max_output_bytes,
                  int subprocess_timeout_sec,
-                 std::vector<std::string> env_passthrough)
+                 std::vector<std::string> env_passthrough,
+                 bool stream_io)
         : m_exit_code(exit_code)
         , m_output(std::move(output))
         , m_max_output_bytes(max_output_bytes)
         , m_subprocess_timeout_sec(subprocess_timeout_sec)
         , m_env_passthrough(std::move(env_passthrough))
+        , m_stream_io(stream_io)
     {
     }
 
@@ -134,7 +136,9 @@ public:
                                stdin_payload,
                                m_max_output_bytes,
                                m_subprocess_timeout_sec,
-                               m_env_passthrough);
+                               m_env_passthrough,
+                               /*extra_env_values=*/{},
+                               m_stream_io);
         }
         catch (const std::exception & e)
         {
@@ -164,6 +168,7 @@ private:
     std::size_t m_max_output_bytes;
     int m_subprocess_timeout_sec;
     std::vector<std::string> m_env_passthrough;
+    bool m_stream_io;
 };
 
 } // namespace
@@ -175,7 +180,8 @@ std::unique_ptr<IReviewer> make_mock_reviewer(const Config & cfg)
         cfg.reviewer_mock_output,
         cfg.max_output_bytes,
         cfg.subprocess_timeout_sec,
-        cfg.reviewer_env_passthrough);
+        cfg.reviewer_env_passthrough,
+        cfg.reviewer_stream_io);
 }
 
 } // namespace modmesh_bot

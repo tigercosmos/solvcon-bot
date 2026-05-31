@@ -28,7 +28,8 @@ public:
                    std::string prompt,
                    std::size_t max_output_bytes,
                    int subprocess_timeout_sec,
-                   std::vector<std::string> env_passthrough)
+                   std::vector<std::string> env_passthrough,
+                   bool stream_io)
         : m_model(model.empty() ? std::string(kDefaultClaudeModel)
                                 : std::move(model))
         , m_effort(effort.empty() ? std::string(kDefaultClaudeEffort)
@@ -37,6 +38,7 @@ public:
         , m_max_output_bytes(max_output_bytes)
         , m_subprocess_timeout_sec(subprocess_timeout_sec)
         , m_env_passthrough(std::move(env_passthrough))
+        , m_stream_io(stream_io)
     {
     }
 
@@ -75,7 +77,8 @@ public:
                                m_max_output_bytes,
                                m_subprocess_timeout_sec,
                                inv.env_passthrough,
-                               inv.env_values);
+                               inv.env_values,
+                               m_stream_io);
         }
         catch (const std::exception & e)
         {
@@ -111,6 +114,7 @@ private:
     std::size_t m_max_output_bytes;
     int m_subprocess_timeout_sec;
     std::vector<std::string> m_env_passthrough;
+    bool m_stream_io;
 };
 
 } // namespace
@@ -123,7 +127,8 @@ std::unique_ptr<IReviewer> make_claude_reviewer(const Config & cfg)
         cfg.reviewer_prompt,
         cfg.max_output_bytes,
         cfg.subprocess_timeout_sec,
-        cfg.reviewer_env_passthrough);
+        cfg.reviewer_env_passthrough,
+        cfg.reviewer_stream_io);
 }
 
 // Test-only — symbol kept narrow so tests can construct + introspect
@@ -136,7 +141,8 @@ ReviewerInvocation claude_build_invocation_for_test(
                      cfg.reviewer_prompt,
                      cfg.max_output_bytes,
                      cfg.subprocess_timeout_sec,
-                     cfg.reviewer_env_passthrough);
+                     cfg.reviewer_env_passthrough,
+                     cfg.reviewer_stream_io);
     return r.build_invocation(diff);
 }
 

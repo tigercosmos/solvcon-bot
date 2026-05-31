@@ -62,6 +62,13 @@ struct Config
     // list. Defaults to empty.
     std::vector<std::string> reviewer_env_passthrough;
 
+    // When true, the reviewer subprocess's stdout + stderr are
+    // mirrored to the bot's stderr in real time. The bot daemon
+    // leaves this false (we don't want PR review bodies bleeding
+    // into systemd logs); run-reviewer sets it true so a human can
+    // watch claude / codex type.
+    bool reviewer_stream_io = false;
+
     static Config from_env();
 };
 
