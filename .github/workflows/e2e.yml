@@ -23,7 +23,7 @@ on:
     inputs:
       scenarios:
         description: 'space-separated scenarios; "all" runs every one'
-        default: 'ping truncated failure idempotency'
+        default: 'ping truncated failure idempotency agent-fake preflight'
         required: true
       keep_artifacts:
         description: 'leave mention/reply/approval on the PR (1=yes)'
@@ -90,7 +90,7 @@ jobs:
           REQUESTED_SCENARIOS: ${{ inputs.scenarios }}
         run: |
           set -eu
-          allowed='ping truncated failure idempotency auto'
+          allowed='ping truncated failure idempotency agent-fake preflight auto'
           requested="$REQUESTED_SCENARIOS"
           if [ "$requested" = "all" ]; then
               requested="$allowed"

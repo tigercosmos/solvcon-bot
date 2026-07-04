@@ -10,7 +10,8 @@
 #
 #   make e2e              run EVERY e2e scenario (reads .env)
 #   make e2e-<name>       run one scenario:
-#                           ping, truncated, failure, idempotency, auto
+#                           ping, truncated, failure, idempotency,
+#                           agent-fake, preflight, auto
 #   make all              build + unit + e2e
 #
 # .env at the repo root drives the e2e targets. See .env.example and
@@ -24,10 +25,10 @@ BUILD_DIR ?= build
 CMAKE      ?= cmake
 CTEST      ?= ctest
 
-E2E_SCENARIOS := ping truncated failure idempotency auto
+E2E_SCENARIOS := ping truncated failure idempotency agent-fake preflight auto
 E2E_TARGETS   := $(addprefix e2e-,$(E2E_SCENARIOS))
 
-.PHONY: default build test check clean help \
+.PHONY: default build test check clean help codexmon \
         e2e $(E2E_TARGETS) all
 
 # e2e scenarios must NOT run in parallel: each one posts to and polls
@@ -52,6 +53,12 @@ test check:
 clean:
 	rm -rf $(BUILD_DIR)
 
+# Install the pinned codexmon release (the wrapper that runs every AI
+# reviewer kind). Default dest: ~/.local/bin; override with
+#   make codexmon CODEXMON_DEST=/usr/local/bin
+codexmon:
+	./scripts/install_codexmon.sh $(CODEXMON_DEST)
+
 # --- end-to-end ------------------------------------------------------------
 
 # Each scenario depends on `build` so source changes are picked up
@@ -61,6 +68,8 @@ e2e-ping:        build ; ./scripts/e2e_ping.sh
 e2e-truncated:   build ; ./scripts/e2e_truncated_diff.sh
 e2e-failure:     build ; ./scripts/e2e_reviewer_failure.sh
 e2e-idempotency: build ; ./scripts/e2e_idempotency.sh
+e2e-agent-fake:  build ; ./scripts/e2e_agent_fake.sh
+e2e-preflight:   build ; ./scripts/e2e_preflight.sh
 e2e-auto:        build ; ./scripts/e2e_auto.sh
 
 # Run every e2e scenario, sequentially (.NOTPARALLEL above guarantees
@@ -82,6 +91,7 @@ help:
 	@printf '  %-18s %s\n' 'make build'       'configure + compile'
 	@printf '  %-18s %s\n' 'make test'        'run unit tests'
 	@printf '  %-18s %s\n' 'make clean'       'rm -rf $(BUILD_DIR)'
+	@printf '  %-18s %s\n' 'make codexmon'    'install the pinned codexmon release binary'
 	@printf '  %-18s %s\n' 'make e2e'         'run every e2e scenario (reads .env)'
 	@for s in $(E2E_SCENARIOS); do \
 	    printf '  %-18s %s\n' "make e2e-$$s" "single e2e scenario: $$s"; \

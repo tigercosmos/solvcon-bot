@@ -23,7 +23,7 @@ on the PR diff, and the output is posted back as a PR comment.
 | Q3b | Ping authorization | **Repo collaborators only** — verified via `GET /repos/{o}/{r}/collaborators/{user}` |
 | Q3c | Ping pre-approval | Ping works at any time, independent of approval state |
 | Q4 | Comment shape | Plain issue comment via `POST /issues/{n}/comments`, with a hidden HTML-comment marker |
-| Q5 | Reviewer dispatch | `REVIEWER_KIND` enum (`mock`/`claude`/`codex`); each is a class implementing `IReviewer`; the factory in `src/reviewer.cpp` picks one at startup. The chosen class shapes the CLI invocation; `execvp` directly — **no shell** in the production path. |
+| Q5 | Reviewer dispatch | `REVIEWER_KIND` enum (`mock`/`claude`/`codex`/`cursor`). `mock` is a local `/bin/cat` echo. Every AI kind is **one** `AgentReviewer` class that runs the agent CLI through **[codexmon](https://github.com/tigercosmos/codexmon)** (`codexmon run --json --stdin --agent <kind> -- <agent args>`); codexmon owns supervision (heartbeats, idle/tool/wall watchdogs, event-stream parsing, result capture). `execvp` directly — **no shell** in the production path. codexmon is installed pinned + checksum-verified via `scripts/install_codexmon.sh`. |
 | Q6 | Poll interval | 30 s default |
 
 **Total third-party C++ deps:** two (cpp-httplib + modmesh). **Runtime link
@@ -40,7 +40,7 @@ Linux).
 - Poll GitHub REST API every 30 s, **paginated** on every list endpoint via the `Link: rel="next"` header (`per_page=100`).
 - **Auto path:** detect first `APPROVED` review on each open PR → run one review.
 - **Ping path:** detect new collaborator comments containing `@<BOT_HANDLE>` on any open PR (not an Issue, not a closed PR) → run a review.
-- Spawn the configured AI CLI as a subprocess, with a **sanitized environment** (no `GITHUB_TOKEN`), feed it the PR diff on stdin, capture stdout.
+- Spawn the configured AI CLI — via the **codexmon** supervisor for all non-mock kinds — as a subprocess, with a **sanitized environment** (no `GITHUB_TOKEN`), feed it the PR diff on stdin, read the result back.
 - Post the captured output as a PR comment, embedding a hidden marker so we can recognize our own comments and stay idempotent across crashes.
 - Persist "already handled" state across restarts.
 
@@ -86,7 +86,7 @@ our own CMake (see §13).
             │                                                  │
             │                       │ dispatch                 │
             │                       ▼                          │
-            │  Reviewer ──► spawn AI CLI (sanitized env) ─────►│──► claude / codex
+            │  Reviewer ──► spawn codexmon (sanitized env) ───►│──► codexmon ──► claude / codex / cursor
             │                       │ (diff on stdin)          │
             │                       ▼                          │
             │  GithubClient (httplib::Client, timeouts) ──────►│──► api.github.com
@@ -125,8 +125,7 @@ modmesh-bot/
 │   ├── github_client.hpp / .cpp    httplib::Client wrapper: pagination, headers, timeouts
 │   ├── state_store.hpp / .cpp      flock'd; reviewed-PR set + handled-comment set + cursor
 │   ├── reviewer.hpp / .cpp         IReviewer interface + factory + MockReviewer
-│   ├── reviewer_claude.cpp         ClaudeReviewer (claude -p, CLAUDE_EFFORT)
-│   ├── reviewer_codex.cpp          CodexReviewer (codex exec, -c reasoning.effort)
+│   ├── reviewer_agent.cpp          AgentReviewer: claude/codex/cursor via `codexmon run`
 │   ├── mention.hpp / .cpp          regex-based @-mention detector
 │   └── watcher.hpp / .cpp          polling loop + auto/ping dispatch
 └── tests/
@@ -221,9 +220,11 @@ Outgoing JSON (e.g. `{"body": "..."}`) emitted via
 | `GITHUB_TOKEN` | yes | — | API auth |
 | `GITHUB_REPO` | yes | — | e.g. `tigercosmos/modmesh` |
 | `BOT_HANDLE` | yes | — | bot's GitHub username, no `@` |
-| `REVIEWER_KIND` | no | `mock` | One of `mock`/`claude`/`codex`. Selects the IReviewer subclass at startup. |
-| `REVIEWER_MODEL` | no | per-kind | Forwarded as `--model` to the AI CLI. Empty falls back to `claude-opus-4-8` (kind=claude) or `gpt-5.5` (kind=codex). |
-| `REVIEWER_EFFORT` | no | `high` | For `claude`: exported as `CLAUDE_EFFORT` to the child. For `codex`: passed as `-c reasoning.effort=$value`. Empty falls back to `high` for both. |
+| `REVIEWER_KIND` | no | `mock` | One of `mock`/`claude`/`codex`/`cursor`. `mock` is local; all others run through codexmon. |
+| `CODEXMON_BIN` | no | `codexmon` | Path to the codexmon executable (default PATH lookup). `scripts/install_codexmon.sh` installs the pinned release. |
+| `REVIEWER_MODEL` | no | per-kind | Forwarded as `--model` to the AI CLI. Empty falls back to `claude-opus-4-8` (kind=claude), `gpt-5.5` (kind=codex), or codexmon's composer default (kind=cursor). |
+| `REVIEWER_EFFORT` | no | `high` | For `claude`: exported as `CLAUDE_EFFORT` (codexmon passes env through). For `codex`: passed as `-c reasoning.effort=$value`. Ignored for `cursor`. |
+| `REVIEWER_IDLE_TIMEOUT_SEC` | no | unset | Forwarded as `codexmon run --idle-timeout`. Unset keeps codexmon's 180 s default; `0` disables the idle watchdog. |
 | `REVIEWER_PROMPT` | no | (built-in) | Literal prompt that replaces the built-in review preamble. Mutually exclusive with `REVIEWER_PROMPT_FILE`. |
 | `REVIEWER_PROMPT_FILE` | no | (built-in) | Path whose contents replace the built-in preamble. |
 | `REVIEWER_MOCK_EXIT_CODE` | no | `0` | Mock-only. Non-zero makes the mock exit with this code (forced-failure tests). |
@@ -239,13 +240,30 @@ Outgoing JSON (e.g. `{"body": "..."}`) emitted via
 | `REVIEWER_ENV_PASSTHROUGH` | no | empty | Comma-separated list of env-var names to pass through from the bot to the reviewer subprocess on top of the defaults (`PATH`/`HOME`/`LANG`/`TERM`/`USER`/`LOGNAME`). Typically `ANTHROPIC_API_KEY` and/or `OPENAI_API_KEY`. |
 
 The reviewer is selected by `REVIEWER_KIND` and constructed by the
-factory in `src/reviewer.cpp`. Each kind is its own class implementing
-`IReviewer::run(diff)`; the class composes the CLI invocation (argv,
-stdin, env passthrough, env values) so the bot itself never assembles
-ad-hoc shell strings. `execvp` directly — no `/bin/sh -c` in the
-production path; the mock kind opts into `/bin/sh -c "exit N"` only
-when explicitly asked to simulate a reviewer crash, and that command
-is fully self-contained (the diff never appears in argv).
+factory in `src/reviewer.cpp`. `mock` is `MockReviewer`; every AI kind
+is the single `AgentReviewer` (`src/reviewer_agent.cpp`), which
+composes
+
+```
+codexmon run --json --stdin --agent <kind> --wall-timeout $SUBPROCESS_TIMEOUT_SEC \
+    [--idle-timeout N] [--heartbeat N] -- <agent-native args>
+```
+
+and feeds prompt + diff on stdin. codexmon injects the agent's
+event-stream flags, supervises the run (heartbeats to stderr,
+idle/tool/wall watchdogs), and prints one status JSON on stdout when
+done; the full review body is read from the `result_file` path it
+reports. Exit codes: `0` completed, `124` stalled/wall-timeout, `130`
+cancelled, anything else forwards the agent's own exit. The bot's
+outer subprocess timeout is wall+60 s — a backstop that fires only if
+codexmon itself wedges. At startup `AgentReviewer::preflight()` runs
+`codexmon doctor --agent <kind> --json` so a missing codexmon or agent
+CLI fails immediately with an install hint. Adding a new agent that
+codexmon supports = one `ReviewerKind` value + one row in the agent
+table. `execvp` directly — no `/bin/sh -c` in the production path; the
+mock kind opts into `/bin/sh -c "exit N"` only when explicitly asked
+to simulate a reviewer crash, and that command is fully self-contained
+(the diff never appears in argv).
 
 ---
 
