@@ -17,20 +17,28 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-// Abstract code-reviewer interface. Concrete subclasses live in
-// src/reviewer*.cpp and are constructed via make_reviewer().
+// Abstract code-reviewer interface. Two concrete implementations:
+// MockReviewer (src/reviewer.cpp, no AI, for tests/e2e) and
+// AgentReviewer (src/reviewer_agent.cpp), which delegates every AI
+// kind — claude, codex, cursor — to the `codexmon` wrapper. codexmon
+// owns process supervision: heartbeats, stall detection, timeouts,
+// event-stream parsing, and result capture.
 class IReviewer
 {
 public:
     virtual ~IReviewer() = default;
 
-    // Returns the reviewer's stdout (the review body) for the given
-    // diff. Throws ReviewerError on timeout, non-zero exit, or spawn
-    // failure.
+    // Returns the review body for the given diff. Throws
+    // ReviewerError on timeout, non-zero exit, or spawn failure.
     virtual std::string run(const std::string & diff) = 0;
 
     // Returns the reviewer's kind for logging.
     virtual ReviewerKind kind() const = 0;
+
+    // Startup check that the reviewer's external dependencies are
+    // usable (e.g. `codexmon doctor`). Throws ReviewerError with an
+    // actionable message when they are not. Default: no-op.
+    virtual void preflight() {}
 };
 
 // Factory: build the right reviewer for `cfg.reviewer_kind`. Throws
@@ -40,7 +48,7 @@ std::unique_ptr<IReviewer> make_reviewer(const Config & cfg);
 // Composed argv + stdin + env that a subprocess-backed reviewer would
 // pass to run_subprocess. Test-only introspection — exposed so that
 // unit tests can assert the CLI invocation without actually spawning
-// the AI CLI.
+// codexmon.
 struct ReviewerInvocation
 {
     std::vector<std::string> argv;
@@ -48,6 +56,22 @@ struct ReviewerInvocation
     std::vector<std::string> env_passthrough;
     std::vector<std::pair<std::string, std::string>> env_values;
 };
+
+// The subset of codexmon's `--json` status record the bot consumes.
+// `codexmon run --json` prints one such object on stdout when the job
+// finishes; the full review text lives in `result_file`
+// (result_preview is capped at 600 chars by codexmon).
+struct CodexmonStatus
+{
+    std::string state;          // "completed" / "failed" / "stalled" / "cancelled"
+    std::string error;          // codexmon's failure reason; empty on success
+    std::string result_file;    // path to the full final agent message
+    std::string result_preview; // truncated copy, for error context
+};
+
+// Parse the status JSON printed by `codexmon run --json`. Throws
+// std::runtime_error on malformed input.
+CodexmonStatus parse_codexmon_status(const std::string & json);
 
 // Built-in default review-prompt preamble. Reviewers prepend this
 // (or the operator's override) to the diff before piping into the AI
@@ -60,31 +84,10 @@ std::string default_review_prompt();
 std::string assemble_review_stdin(const std::string & prompt,
                                   const std::string & diff);
 
-// Reviewer subprocesses cap their stdout at MAX_OUTPUT_BYTES. When
-// that fires we append a notice to the returned body so the posted
-// comment doesn't look like a complete review that ends mid-sentence.
-// No-op when not truncated.
+// Review bodies are capped at MAX_OUTPUT_BYTES. When that fires we
+// append a notice to the returned body so the posted comment doesn't
+// look like a complete review that ends mid-sentence. No-op when not
+// truncated.
 std::string maybe_append_truncation_note(std::string body, bool truncated);
-
-// RAII heartbeat: when constructed with interval_sec > 0, spawns a
-// background thread that writes a one-line "still working ... NNs"
-// status to STDERR_FILENO every interval_sec seconds with `label` as
-// a prefix. The thread is signalled and joined in the destructor.
-// interval_sec <= 0 is a no-op — no thread is created. Used by every
-// reviewer's run() so both the bot daemon and run-reviewer can
-// surface "I'm not stuck" while the AI CLI is thinking.
-class Heartbeat
-{
-public:
-    Heartbeat(int interval_sec, std::string label);
-    ~Heartbeat();
-
-    Heartbeat(const Heartbeat &) = delete;
-    Heartbeat & operator=(const Heartbeat &) = delete;
-
-private:
-    struct Impl;
-    std::unique_ptr<Impl> m_impl;
-};
 
 } // namespace modmesh_bot

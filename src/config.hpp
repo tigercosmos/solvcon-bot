@@ -8,13 +8,17 @@
 namespace modmesh_bot
 {
 
-// Which reviewer class the factory should instantiate. The strings on
-// the right are what REVIEWER_KIND accepts (case-insensitive).
+// Which reviewer the factory should instantiate. The strings on the
+// right are what REVIEWER_KIND accepts (case-insensitive). Every kind
+// except Mock is one AgentReviewer that shells out to `codexmon run
+// --agent <kind>`; adding a kind means one enum value plus one row in
+// the agent table in src/reviewer_agent.cpp.
 enum class ReviewerKind
 {
     Mock,   // "mock"   — spawns /bin/cat; knobs for forced failure / fixed output
-    Claude, // "claude" — spawns `claude -p [--model X]`, sets CLAUDE_EFFORT if configured
-    Codex,  // "codex"  — spawns `codex exec [--model X] [-c reasoning.effort=E]`
+    Claude, // "claude" — codexmon run --agent claude  (claude -p)
+    Codex,  // "codex"  — codexmon run --agent codex   (codex exec)
+    Cursor, // "cursor" — codexmon run --agent cursor  (cursor-agent -p)
 };
 
 struct Config
@@ -62,19 +66,28 @@ struct Config
     // list. Defaults to empty.
     std::vector<std::string> reviewer_env_passthrough;
 
-    // When true, the reviewer subprocess's stdout + stderr are
-    // mirrored to the bot's stderr in real time. Set by run-reviewer
-    // unconditionally; the bot daemon honours the REVIEWER_STREAM_IO
-    // env var (default off — operators with structured logs usually
-    // don't want raw AI output interleaved).
+    // When true, the codexmon subprocess's stdout + stderr are
+    // mirrored to the bot's stderr in real time (codexmon writes its
+    // heartbeats and live agent progress to stderr). Set by
+    // run-reviewer unconditionally; the bot daemon honours the
+    // REVIEWER_STREAM_IO env var (default off — operators with
+    // structured logs usually don't want raw AI output interleaved).
     bool reviewer_stream_io = false;
 
-    // Interval (seconds) at which the reviewer emits a
-    // "reviewer heartbeat NNs" line to stderr while waiting for the
-    // child to return. 0 = off. Used by both the bot daemon (via
-    // REVIEWER_HEARTBEAT_SEC env) and run-reviewer (default 10s when
-    // stream_io is off).
+    // Forwarded to `codexmon run --heartbeat N` (cadence of codexmon's
+    // stderr heartbeat lines). 0 = don't pass the flag; codexmon's own
+    // default (10s) applies.
     int reviewer_heartbeat_sec = 0;
+
+    // Forwarded to `codexmon run --idle-timeout N`: kill the agent
+    // after N idle seconds when nothing is in flight. -1 = don't pass
+    // the flag (codexmon's default, 180s, applies); 0 = disable the
+    // idle watchdog. Env: REVIEWER_IDLE_TIMEOUT_SEC.
+    int reviewer_idle_timeout_sec = -1;
+
+    // Path to the codexmon executable. Default resolves via PATH.
+    // Env: CODEXMON_BIN. Install with scripts/install_codexmon.sh.
+    std::string codexmon_bin = "codexmon";
 
     static Config from_env();
 };

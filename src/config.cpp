@@ -202,8 +202,9 @@ ReviewerKind parse_reviewer_kind(const std::string & s)
     if (n == "mock") return ReviewerKind::Mock;
     if (n == "claude") return ReviewerKind::Claude;
     if (n == "codex") return ReviewerKind::Codex;
+    if (n == "cursor") return ReviewerKind::Cursor;
     throw std::runtime_error(
-        std::string("REVIEWER_KIND must be one of mock|claude|codex; got: ") + s);
+        std::string("REVIEWER_KIND must be one of mock|claude|codex|cursor; got: ") + s);
 }
 
 const char * to_string(ReviewerKind k)
@@ -213,6 +214,7 @@ const char * to_string(ReviewerKind k)
     case ReviewerKind::Mock:   return "mock";
     case ReviewerKind::Claude: return "claude";
     case ReviewerKind::Codex:  return "codex";
+    case ReviewerKind::Cursor: return "cursor";
     }
     return "?";
 }
@@ -294,6 +296,17 @@ void apply_reviewer_env(Config & cfg)
     }
     cfg.reviewer_heartbeat_sec = env_int_or(
         "REVIEWER_HEARTBEAT_SEC", cfg.reviewer_heartbeat_sec, 0, 3600);
+
+    // Idle watchdog forwarded to codexmon. Unset keeps -1 (= don't
+    // pass the flag, codexmon's default applies); 0 disables it.
+    if (const char * v = std::getenv("REVIEWER_IDLE_TIMEOUT_SEC");
+        v != nullptr && *v != '\0')
+    {
+        cfg.reviewer_idle_timeout_sec = parse_nonneg<int>(
+            "REVIEWER_IDLE_TIMEOUT_SEC", v, 0, 86400);
+    }
+
+    cfg.codexmon_bin = env_or("CODEXMON_BIN", cfg.codexmon_bin);
 
     // Subprocess plumbing that the reviewer depends on. These match
     // the same env names used by the full bot config.

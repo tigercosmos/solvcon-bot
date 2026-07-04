@@ -45,7 +45,7 @@ void print_usage(std::ostream & os)
        << "If DIFF_FILE is omitted, the diff is read from stdin.\n"
        << "\n"
        << "Reviewer is selected by the same env vars as the bot:\n"
-       << "  REVIEWER_KIND          mock | claude | codex  (default: mock)\n"
+       << "  REVIEWER_KIND          mock | claude | codex | cursor  (default: mock)\n"
        << "  REVIEWER_MODEL         passed to --model (kind-specific default)\n"
        << "  REVIEWER_EFFORT        CLAUDE_EFFORT (claude) or reasoning.effort (codex)\n"
        << "  REVIEWER_PROMPT        literal prompt text\n"
@@ -53,13 +53,15 @@ void print_usage(std::ostream & os)
        << "  REVIEWER_MOCK_EXIT_CODE non-zero forces mock to fail (e2e helper)\n"
        << "  REVIEWER_MOCK_OUTPUT   if set, mock prints this instead of echoing\n"
        << "  REVIEWER_ENV_PASSTHROUGH comma-separated env-var names\n"
-       << "  REVIEWER_STREAM_IO     1/true/yes/on -> mirror child stdout/stderr live\n"
-       << "  REVIEWER_HEARTBEAT_SEC seconds between 'still working' lines (0 = off)\n"
+       << "  REVIEWER_STREAM_IO     1/true/yes/on -> mirror codexmon's live output\n"
+       << "  REVIEWER_HEARTBEAT_SEC codexmon heartbeat cadence (0 = codexmon default)\n"
+       << "  REVIEWER_IDLE_TIMEOUT_SEC codexmon idle watchdog (unset = codexmon default)\n"
+       << "  CODEXMON_BIN           path to codexmon (default: PATH lookup)\n"
        << "  MAX_OUTPUT_BYTES       (default 60000)\n"
-       << "  SUBPROCESS_TIMEOUT_SEC (default 300)\n"
+       << "  SUBPROCESS_TIMEOUT_SEC codexmon wall timeout (default 300)\n"
        << "\n"
-       << "This tool's defaults: REVIEWER_STREAM_IO=on, REVIEWER_HEARTBEAT_SEC=10.\n"
-       << "Override either by setting the env var explicitly.\n"
+       << "AI kinds run through codexmon (scripts/install_codexmon.sh).\n"
+       << "This tool's default: REVIEWER_STREAM_IO=on.\n"
        << "\n"
        << "Exit codes: 0 success, 1 reviewer error, 2 usage / setup error.\n";
 }
@@ -93,16 +95,13 @@ int main(int argc, char ** argv)
         // the env left the field at Config's compiled-in default.
         modmesh_bot::apply_reviewer_env(cfg);
 
-        // run-reviewer is interactive — humans watching want both
-        // streaming and a heartbeat. apply_reviewer_env may have
-        // already set them via env; only fill in when unset.
+        // run-reviewer is interactive — humans watching want live
+        // output (codexmon's heartbeats + agent progress land on
+        // stderr). apply_reviewer_env may have already set it via env;
+        // only fill in when unset.
         if (!std::getenv("REVIEWER_STREAM_IO"))
         {
             cfg.reviewer_stream_io = true;
-        }
-        if (cfg.reviewer_heartbeat_sec == 0 && !std::getenv("REVIEWER_HEARTBEAT_SEC"))
-        {
-            cfg.reviewer_heartbeat_sec = 10;
         }
 
         if (from_file)
@@ -138,6 +137,9 @@ int main(int argc, char ** argv)
         // make_reviewer can throw (currently only for unhandled enum
         // values, but make sure it's inside the setup-error path).
         rv = modmesh_bot::make_reviewer(cfg);
+        // Verify codexmon + the agent CLI are usable before spending a
+        // long run on a doomed invocation.
+        rv->preflight();
     }
     catch (const std::exception & e)
     {
@@ -147,29 +149,16 @@ int main(int argc, char ** argv)
 
     std::cerr << "run-reviewer: kind=" << to_string(cfg.reviewer_kind)
               << " diff_bytes=" << diff.size()
-              << " timeout=" << cfg.subprocess_timeout_sec << "s"
+              << " wall_timeout=" << cfg.subprocess_timeout_sec << "s"
               << " stream_io=" << (cfg.reviewer_stream_io ? "on" : "off")
-              << " heartbeat_sec=" << cfg.reviewer_heartbeat_sec
               << std::endl;
     if (cfg.reviewer_stream_io
-        && cfg.reviewer_kind == modmesh_bot::ReviewerKind::Claude)
+        && cfg.reviewer_kind != modmesh_bot::ReviewerKind::Mock)
     {
-        std::cerr << "run-reviewer: stream_io is on — claude is invoked "
-                     "with --output-format stream-json --verbose and a "
-                     "parser surfaces each event (init/turn/tool/result) "
-                     "to this stderr as it arrives. The plain markdown "
-                     "body is re-printed on stdout at the end so you can "
-                     "pipe it."
-                  << std::endl;
-    }
-    else if (cfg.reviewer_stream_io
-             && cfg.reviewer_kind == modmesh_bot::ReviewerKind::Codex)
-    {
-        std::cerr << "run-reviewer: stream_io is on — child stdout/stderr "
-                     "are mirrored to this stderr. `codex exec` buffers "
-                     "its response until completion, so during the wait "
-                     "the visible signal is the heartbeat below; the "
-                     "review body lands at the end."
+        std::cerr << "run-reviewer: stream_io is on — codexmon's stderr "
+                     "(heartbeats + live agent events) is mirrored here "
+                     "while the review runs; the review body lands on "
+                     "stdout at the end so you can pipe it."
                   << std::endl;
     }
 
@@ -179,9 +168,6 @@ int main(int argc, char ** argv)
     std::string err_msg;
     try
     {
-        // The Reviewer instance owns the heartbeat thread internally
-        // (see Heartbeat in reviewer.hpp). No more user-space thread
-        // management here.
         out = rv->run(diff);
     }
     catch (const std::exception & e)

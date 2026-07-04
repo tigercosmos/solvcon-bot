@@ -203,8 +203,7 @@ RunResult run_subprocess(
     int timeout_seconds,
     const std::vector<std::string> & extra_env_allowlist,
     const std::vector<std::pair<std::string, std::string>> & extra_env_values,
-    bool tee_child_io_to_stderr,
-    const StdoutChunkHandler & on_stdout_chunk)
+    bool tee_child_io_to_stderr)
 {
     if (argv.empty())
     {
@@ -414,25 +413,13 @@ RunResult run_subprocess(
                 std::string & dst = is_stdout ? result.stdout_buf : result.stderr_buf;
                 bool & trunc = is_stdout ? result.stdout_truncated : result.stderr_truncated;
                 bool & eof = is_stdout ? out_eof : err_eof;
-                const bool route_stdout_to_handler =
-                    is_stdout && static_cast<bool>(on_stdout_chunk);
 
                 while (true)
                 {
                     ssize_t n = ::read(fd, buf, sizeof(buf));
                     if (n > 0)
                     {
-                        if (route_stdout_to_handler)
-                        {
-                            // Caller owns presentation of stdout (e.g.
-                            // parsing claude's stream-json events). We
-                            // still append to stdout_buf for fallback /
-                            // capture, but bypass the auto-tee so raw
-                            // JSON doesn't leak to the parent stderr.
-                            on_stdout_chunk(std::string_view(
-                                buf, static_cast<std::size_t>(n)));
-                        }
-                        else if (tee_child_io_to_stderr)
+                        if (tee_child_io_to_stderr)
                         {
                             // Mirror to the parent's stderr in real
                             // time so a human-facing caller can watch

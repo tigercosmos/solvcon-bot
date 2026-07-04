@@ -56,6 +56,10 @@ int main()
 
         modmesh_bot::GithubClient gh(cfg);
         auto rv = modmesh_bot::make_reviewer(cfg);
+        // Fail at startup — not on the first PR hours later — when the
+        // reviewer's external dependency (codexmon + the agent CLI) is
+        // missing or broken.
+        rv->preflight();
         modmesh_bot::log_info("main",
             std::string("reviewer kind=") + modmesh_bot::to_string(cfg.reviewer_kind));
         modmesh_bot::LiveWatcherIo io(gh, *rv, state);
