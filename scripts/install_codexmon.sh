@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-VERSION="${CODEXMON_VERSION:-0.3.0}"
+VERSION="${CODEXMON_VERSION:-0.8.0}"
 DEST="${1:-${CODEXMON_INSTALL_DIR:-$HOME/.local/bin}}"
 
 case "$(uname -s)" in
