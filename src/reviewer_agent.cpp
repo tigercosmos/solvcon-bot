@@ -12,7 +12,7 @@
 
 #include "subprocess.hpp"
 
-#include <modmesh/serialization/SerializableItem.hpp>
+#include <solvcon/serialization/SerializableItem.hpp>
 
 #include <fstream>
 #include <memory>
@@ -21,13 +21,13 @@
 #include <utility>
 #include <vector>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 namespace
 {
 
-namespace detail = modmesh::detail;
+namespace detail = solvcon::detail;
 
 // Per-agent knobs. `default_model` is what the bot passes as --model
 // when REVIEWER_MODEL is empty; an empty default means "let the agent
@@ -350,4 +350,4 @@ ReviewerInvocation agent_build_invocation_for_test(
     return AgentReviewer(cfg).build_invocation(diff);
 }
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

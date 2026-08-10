@@ -18,7 +18,7 @@ class Client;
 struct Result;
 } // namespace httplib
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 class GithubError : public std::runtime_error
@@ -58,7 +58,7 @@ std::string url_path_segment_encode(const std::string & user);
 // Escape a UTF-8 string for embedding inside a JSON string literal.
 // Only 0x00-0x1F control bytes and the JSON-mandatory `"` and `\` are
 // escaped; bytes 0x20-0xFF are emitted verbatim, which is correct for
-// UTF-8 (JSON strings accept any byte 0x20-0xFF as-is). Unlike modmesh's
+// UTF-8 (JSON strings accept any byte 0x20-0xFF as-is). Unlike solvcon's
 // escape_string, this does not corrupt non-ASCII UTF-8 sequences on
 // platforms where `char` is signed.
 std::string json_escape_utf8(std::string_view s);
@@ -98,4 +98,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 // Defined in reviewer_agent.cpp: the codexmon-backed reviewer that
@@ -162,8 +162,8 @@ std::string maybe_append_truncation_note(std::string body, bool truncated)
 {
     if (!truncated) return body;
     if (!body.empty() && body.back() != '\n') body += '\n';
-    body += "\n_modmesh-bot: reviewer output truncated at MAX_OUTPUT_BYTES._\n";
+    body += "\n_solvcon-bot: reviewer output truncated at MAX_OUTPUT_BYTES._\n";
     return body;
 }
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

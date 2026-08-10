@@ -3,7 +3,7 @@
 #include <string>
 #include <string_view>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 // True iff `body` contains a `@<handle>` mention, case-insensitive, at a
@@ -19,4 +19,4 @@ bool mention_matches(std::string_view body, std::string_view handle);
 // ASCII).
 bool eq_login(std::string_view a, std::string_view b);
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 class GithubClient;
@@ -102,7 +102,7 @@ private:
 
 // Format the full hidden HTML-comment marker that the bot prefixes onto
 // every comment it posts. Includes the bot version for traceability:
-// "<!-- modmesh-bot/<ver> source=<s> pr=<n> trigger=<t> -->".
+// "<!-- solvcon-bot/<ver> source=<s> pr=<n> trigger=<t> -->".
 std::string build_marker(const std::string & source, int pr_number,
                          std::optional<long long> trigger_comment_id);
 
@@ -116,4 +116,4 @@ std::string build_marker_key(const std::string & source, int pr_number,
 // True iff `body` contains the version-agnostic marker key.
 bool body_has_marker_key(const std::string & body, const std::string & key);
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

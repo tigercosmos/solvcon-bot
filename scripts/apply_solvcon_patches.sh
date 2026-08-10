@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Apply local modmesh JSON-parser patches to the third_party/modmesh
+# Apply local solvcon JSON-parser patches to the third_party/solvcon
 # submodule's working tree. See issue.md for what each patch fixes.
 #
 # Idempotent: skips a patch that's already applied. Exits non-zero on
@@ -9,7 +9,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SUBMODULE_DIR="$REPO_ROOT/third_party/modmesh"
+SUBMODULE_DIR="$REPO_ROOT/third_party/solvcon"
 PATCH_DIR="$REPO_ROOT/patches"
 
 if [[ ! -d "$SUBMODULE_DIR" ]]; then

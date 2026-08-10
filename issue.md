@@ -2,21 +2,20 @@
 
 ## Status
 
-The two modmesh JSON-parser bugs below are patched locally in
-`patches/modmesh-serializer-edge-cases.patch`, applied to
-`third_party/modmesh`'s working tree by
-`scripts/apply_modmesh_patches.sh`. CI (`.github/workflows/ci.yml`)
-runs the script before building; a fresh local clone needs to run it
-once. The submodule pointer is unchanged (still at `solvcon/modmesh`
-`e05d29f`).
+Issues 1 and 2 below are **fixed upstream**: the submodule is bumped
+to `solvcon/solvcon` `b7b934f5`, whose rewritten value scanner handles
+empty arrays/objects and tracks string state. The local patch
+(`patches/solvcon-serializer-edge-cases.patch`) has been deleted;
+`scripts/apply_solvcon_patches.sh` is kept as infrastructure (it
+no-ops with an empty `patches/` dir) in case a future workaround is
+needed. Their write-ups are kept below for historical context.
 
-The patches are not upstream yet. Once an upstream PR lands and the
-submodule SHA is bumped, the patch file and the apply script can be
-deleted.
+Issue 3 (`escape_string` UTF-8 corruption) is still present upstream
+at `b7b934f5`; the bot continues to sidestep it with its own escaper.
 
-## 1. modmesh JSON parser rejects empty arrays and empty objects
+## 1. ~~solvcon JSON parser rejects empty arrays and empty objects~~ (fixed upstream)
 
-**Where:** `third_party/modmesh/cpp/modmesh/serialization/SerializableItem.cpp`
+**Where:** `third_party/solvcon/cpp/solvcon/serialization/SerializableItem.cpp`
 **Functions:** `JsonNode::parse_array`, `JsonNode::parse_object`
 
 **Bug.** Round-tripping any JSON that contains `[]` or `{}` throws
@@ -30,7 +29,7 @@ never models the "immediately-closing-bracket-after-opening" transition:
 - In `parse_object`, after consuming `{`, the state moves to `ObjectKey`.
   `}` then trips the "missing opening quote for key" branch.
 
-**Why it matters for modmesh-bot.** The GitHub REST API returns `[]` for
+**Why it matters for solvcon-bot.** The GitHub REST API returns `[]` for
 *every* empty list — empty reviews, empty comments, empty PR list,
 etc. Any list endpoint with zero items would crash the parser in M3.
 The state file also serializes `reviewed_prs`, `handled_comments` as
@@ -38,7 +37,7 @@ arrays that are empty on first run, so first-tick save → second-tick
 load round-trip also crashes (caught during M1 verification).
 
 **Local workaround (already applied, not committed).** Two small
-patches in this checkout's `third_party/modmesh` working tree:
+patches in this checkout's `third_party/solvcon` working tree:
 
 ```diff
 @@ parse_array, JsonState::ObjectValue
@@ -62,17 +61,9 @@ patches in this checkout's `third_party/modmesh` working tree:
              if (c == '"') { …existing… }
 ```
 
-The patch is sitting uncommitted in the submodule's working tree so M1
-verifies locally. The pinned submodule SHA (`e05d29f`) does **not**
-include the fix, so a fresh `git submodule update --init` will not
-have it.
-
-**Resolution plan.**
-1. Upstream the fix to `solvcon/modmesh` as its own PR with unit tests
-   covering `[]`, `{}`, nested `{"a":[]}`, `{"a":{}}`, and trailing
-   commas.
-2. Once merged, bump `third_party/modmesh` to the new SHA and drop the
-   note about the workaround from `plan.md`.
+**Resolution.** Fixed upstream; the submodule is now pinned at
+`b7b934f5`, which includes the fix, and the local patch has been
+deleted.
 
 **Caveat (over-permissive).** The current patch also accepts
 trailing-comma inputs like `[1,2,]` and `{"k":1,}` because the
@@ -81,16 +72,13 @@ empty-container early-out (`if (c == ']') state = End`) fires both at
 strict-JSON variant would need an extra flag to distinguish those two
 states. We accept the looser behavior for now because GitHub's API
 never emits trailing commas, so the laxness is unreachable in
-practice; the upstream PR may choose to tighten this.
-
-**Tracking.** Replace this entry with a link to the upstream PR/issue
-once filed.
+practice.
 
 ---
 
-## 2. modmesh JSON parser does not track string state while scanning values
+## 2. ~~solvcon JSON parser does not track string state while scanning values~~ (fixed upstream)
 
-**Where:** `third_party/modmesh/cpp/modmesh/serialization/SerializableItem.cpp`
+**Where:** `third_party/solvcon/cpp/solvcon/serialization/SerializableItem.cpp`
 **Functions:** `JsonNode::parse_object`, `JsonNode::parse_array`
 
 **Bug.** In both `parse_object` and `parse_array`, when the current
@@ -115,14 +103,14 @@ value expression: …`. Escaped quotes (`\"`) inside strings are also
 not tracked, so a string like `"He said \"hi\""` is split at the
 first inner quote.
 
-**Why it matters for modmesh-bot.** `IssueComment.body` is exactly the
+**Why it matters for solvcon-bot.** `IssueComment.body` is exactly the
 kind of free-form string that contains commas, braces, and quoted
 text in everyday usage. Any comment with `,` in its body will crash
 `list_issue_comments`, which is on the ping path's hot path. M3 ships
 *through* this bug for now (see below) — production usage will trip
 it immediately.
 
-**Required fix in modmesh.** Track string-quote and backslash-escape
+**Required fix in solvcon.** Track string-quote and backslash-escape
 state in both scanning loops, and only treat `,`/`}`/`]` as a value
 terminator when not currently inside a quoted string.
 
@@ -134,16 +122,14 @@ the bot now parses real `/repos/.../issues/comments` and `/pulls`
 responses (which embed `following_url`-style strings containing `{`,
 `}`, slashes) without crashing.
 
-**Resolution plan.** Same as bug #1: upstream a single PR to
-`solvcon/modmesh` that fixes both (string-state scanning here, empty
-arrays/objects in #1), then bump our submodule SHA. Until then,
-`third_party/modmesh` has a dirty working tree carrying both patches.
+**Resolution.** Fixed upstream (together with #1) as of the
+`b7b934f5` submodule bump; the local patch has been deleted.
 
 ---
 
-## 3. modmesh `escape_string` corrupts non-ASCII bytes (UTF-8)
+## 3. solvcon `escape_string` corrupts non-ASCII bytes (UTF-8)
 
-**Where:** `third_party/modmesh/cpp/modmesh/serialization/SerializableItem.cpp`
+**Where:** `third_party/solvcon/cpp/solvcon/serialization/SerializableItem.cpp`
 **Function:** `escape_string`
 
 **Bug.** The fallback branch is:
@@ -161,14 +147,14 @@ so `c < 32` is true and the byte is "escaped" as `\u` plus the
 signed-int representation, which is neither four hex digits nor a
 valid Unicode code unit. UTF-8-encoded text is therefore mangled.
 
-**Why it matters for modmesh-bot.** Any AI-CLI output containing
+**Why it matters for solvcon-bot.** Any AI-CLI output containing
 non-ASCII (Unicode punctuation, emoji, non-Latin scripts) would be
-corrupted when posted back through modmesh's `to_json_string`. We
+corrupted when posted back through solvcon's `to_json_string`. We
 sidestep this in `GithubClient::post_comment` by emitting the comment
 JSON ourselves with a local UTF-8-safe escaper, so M3 ships without
-relying on modmesh's emitter for outgoing comment bodies.
+relying on solvcon's emitter for outgoing comment bodies.
 
-**Required fix in modmesh.** Cast to `unsigned char` before the
+**Required fix in solvcon.** Cast to `unsigned char` before the
 range comparison; emit raw bytes 0x20–0xFF since JSON strings accept
 any UTF-8 byte; only `\u00XX`-escape control bytes 0x00–0x1F (plus
 the JSON-mandatory `"` and `\\`).

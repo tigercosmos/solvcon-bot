@@ -14,7 +14,7 @@ MAX_DIFF_BYTES=1 e2e_setup "${1:-.env}"
 # is the saver). We just ensure it's small here:
 MAX_DIFF_BYTES=1
 
-MENTION_BODY="modmesh-bot e2e truncated $NONCE — @${BOT_HANDLE} please review"
+MENTION_BODY="solvcon-bot e2e truncated $NONCE — @${BOT_HANDLE} please review"
 e2e_post_mention "$MENTION_BODY"
 
 cleanup() {

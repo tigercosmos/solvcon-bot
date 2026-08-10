@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 // Which reviewer the factory should instantiate. The strings on the
@@ -40,7 +40,7 @@ struct Config
     std::string reviewer_mock_output;    // if non-empty, mock prints this instead of echoing
 
     int poll_interval_sec = 30;
-    std::string state_file = "./modmesh-bot.state";
+    std::string state_file = "./solvcon-bot.state";
 
     std::size_t max_diff_bytes = 200000;
     std::size_t max_output_bytes = 60000;
@@ -111,4 +111,4 @@ inline std::ostream & operator<<(std::ostream & os, ReviewerKind k)
     return os << to_string(k);
 }
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

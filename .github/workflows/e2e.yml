@@ -9,7 +9,7 @@ name: E2E (manual)
 # Required repository secrets (Settings → Secrets and variables →
 # Actions):
 #
-#   E2E_GITHUB_REPO   owner/name of the test repo, e.g. tigercosmos/modmesh
+#   E2E_GITHUB_REPO   owner/name of the test repo, e.g. tigercosmos/solvcon
 #   E2E_BOT_HANDLE    bot's GitHub username (collaborator on the test repo)
 #   E2E_BOT_PAT       bot's PAT — repo scope (or fine-grained: pull-requests:write,
 #                     contents:read, metadata:read, members:read for org repos)
@@ -69,7 +69,7 @@ jobs:
           BOT_PAT=${{ secrets.E2E_BOT_PAT }}
           TEST_PR_NUMBER=${{ secrets.E2E_PR_NUMBER }}
           REVIEWER_KIND=mock
-          STATE_FILE=/tmp/modmesh-bot-e2e.state
+          STATE_FILE=/tmp/solvcon-bot-e2e.state
           EOF
           # Mask any echoed secret value (belt-and-braces).
           echo "::add-mask::${{ secrets.E2E_BOT_PAT }}"
@@ -114,7 +114,7 @@ jobs:
       - name: Bot log (on failure)
         if: failure()
         run: |
-          if [ -f /tmp/modmesh-bot-e2e.log ]; then
-              echo "--- /tmp/modmesh-bot-e2e.log ---"
-              tail -200 /tmp/modmesh-bot-e2e.log || true
+          if [ -f /tmp/solvcon-bot-e2e.log ]; then
+              echo "--- /tmp/solvcon-bot-e2e.log ---"
+              tail -200 /tmp/solvcon-bot-e2e.log || true
           fi

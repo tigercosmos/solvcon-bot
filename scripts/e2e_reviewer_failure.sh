@@ -16,7 +16,7 @@ e2e_setup "${1:-.env}"
 REVIEWER_KIND=mock
 REVIEWER_MOCK_EXIT_CODE=17
 
-MENTION_BODY="modmesh-bot e2e reviewer-fail $NONCE — @${BOT_HANDLE} please review"
+MENTION_BODY="solvcon-bot e2e reviewer-fail $NONCE — @${BOT_HANDLE} please review"
 e2e_post_mention "$MENTION_BODY"
 
 cleanup() {

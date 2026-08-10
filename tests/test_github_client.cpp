@@ -46,10 +46,10 @@ int g_passed = 0;
         }                                                                    \
     } while (0)
 
-using modmesh_bot::github_detail::json_escape_utf8;
-using modmesh_bot::github_detail::parse_link_next;
-using modmesh_bot::github_detail::parse_retry_after;
-using modmesh_bot::github_detail::url_path_segment_encode;
+using solvcon_bot::github_detail::json_escape_utf8;
+using solvcon_bot::github_detail::parse_link_next;
+using solvcon_bot::github_detail::parse_retry_after;
+using solvcon_bot::github_detail::url_path_segment_encode;
 
 // --- Link header rel="next" ----------------------------------------------
 
@@ -171,7 +171,7 @@ void test_json_escape_control_chars()
 void test_json_escape_utf8_preserved()
 {
     // "héllo 漢字 🙂" — every non-ASCII byte must round-trip verbatim. This
-    // is the bug case: modmesh's escape_string mangles 0x80+ bytes on
+    // is the bug case: solvcon's escape_string mangles 0x80+ bytes on
     // signed-char platforms.
     const std::string input = "h\xc3\xa9llo \xe6\xbc\xa2\xe5\xad\x97 \xf0\x9f\x99\x82";
     EXPECT_EQ(json_escape_utf8(input), input);

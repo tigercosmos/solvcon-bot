@@ -48,7 +48,7 @@ int g_passed = 0;
         }                                                                    \
     } while (0)
 
-using namespace modmesh_bot;
+using namespace solvcon_bot;
 
 // --- User -----------------------------------------------------------------
 
@@ -160,12 +160,12 @@ void test_pr_detail_closed_pr()
 
 void test_issue_comment()
 {
-    const std::string sample = R"({"id":1234567890,"body":"@modmesh-bot please review","user":{"login":"alice","id":1},"created_at":"2026-03-01T00:00:01Z","updated_at":"2026-03-01T00:00:05Z","issue_url":"https://api.github.com/repos/o/r/issues/55","html_url":"https://example.invalid/r/issues/55#issuecomment-1"})";
+    const std::string sample = R"({"id":1234567890,"body":"@solvcon-bot please review","user":{"login":"alice","id":1},"created_at":"2026-03-01T00:00:01Z","updated_at":"2026-03-01T00:00:05Z","issue_url":"https://api.github.com/repos/o/r/issues/55","html_url":"https://example.invalid/r/issues/55#issuecomment-1"})";
 
     IssueComment c;
     c.from_json(sample);
     EXPECT_EQ(c.id, static_cast<std::int64_t>(1234567890));
-    EXPECT_EQ(c.body, std::string("@modmesh-bot please review"));
+    EXPECT_EQ(c.body, std::string("@solvcon-bot please review"));
     EXPECT_EQ(c.user.login, std::string("alice"));
     EXPECT_EQ(c.created_at, std::string("2026-03-01T00:00:01Z"));
     EXPECT_EQ(c.updated_at, std::string("2026-03-01T00:00:05Z"));

@@ -12,15 +12,15 @@
 #include <sstream>
 #include <string>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 namespace
 {
 
-inline void log_info(const std::string & m) { modmesh_bot::log_info("watcher", m); }
-inline void log_warn(const std::string & m) { modmesh_bot::log_warn("watcher", m); }
-inline void log_err (const std::string & m) { modmesh_bot::log_error("watcher", m); }
+inline void log_info(const std::string & m) { solvcon_bot::log_info("watcher", m); }
+inline void log_warn(const std::string & m) { solvcon_bot::log_warn("watcher", m); }
+inline void log_err (const std::string & m) { solvcon_bot::log_error("watcher", m); }
 
 // 401/403/422 are not transient: continuing to retry would just keep
 // failing and the operator would never notice. These get re-thrown out
@@ -47,7 +47,7 @@ std::string build_marker(const std::string & source, int pr_number,
                          std::optional<long long> trigger_comment_id)
 {
     std::ostringstream oss;
-    oss << "<!-- modmesh-bot/" << MODMESH_BOT_VERSION
+    oss << "<!-- solvcon-bot/" << SOLVCON_BOT_VERSION
         << " source=" << source
         << " pr=" << pr_number
         << " trigger=" << trigger_str(trigger_comment_id)
@@ -374,4 +374,4 @@ void Watcher::dispatch_review(int pr_number, const std::string & source,
              + std::to_string(pr_number));
 }
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

@@ -4,7 +4,7 @@
 #include <set>
 #include <string>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 class StateStore
@@ -46,4 +46,4 @@ private:
     std::int64_t cursor_id_ = 0;
 };
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

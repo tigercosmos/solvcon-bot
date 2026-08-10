@@ -3,7 +3,7 @@
 #include <string>
 #include <string_view>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 enum class LogLevel
@@ -27,8 +27,8 @@ inline void log_warn (std::string_view c, std::string_view m) { log(LogLevel::Wa
 inline void log_error(std::string_view c, std::string_view m) { log(LogLevel::Error, c, m); }
 
 // Filter: messages with level < threshold are dropped. Default is Info.
-// Reads MODMESH_BOT_LOG_LEVEL env var on first use; values are case-
+// Reads SOLVCON_BOT_LOG_LEVEL env var on first use; values are case-
 // insensitive: "debug"|"info"|"warn"|"error".
 LogLevel current_log_level();
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

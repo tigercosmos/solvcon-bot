@@ -81,9 +81,9 @@ int main(int argc, char ** argv)
         }
     }
 
-    modmesh_bot::Config cfg;
+    solvcon_bot::Config cfg;
     std::string diff;
-    std::unique_ptr<modmesh_bot::IReviewer> rv;
+    std::unique_ptr<solvcon_bot::IReviewer> rv;
     const bool from_file = (argc > 1);
     try
     {
@@ -93,7 +93,7 @@ int main(int argc, char ** argv)
         // to the bot. After it runs, any env var the operator set
         // takes effect; below we set tool-specific defaults only when
         // the env left the field at Config's compiled-in default.
-        modmesh_bot::apply_reviewer_env(cfg);
+        solvcon_bot::apply_reviewer_env(cfg);
 
         // run-reviewer is interactive — humans watching want live
         // output (codexmon's heartbeats + agent progress land on
@@ -136,7 +136,7 @@ int main(int argc, char ** argv)
 
         // make_reviewer can throw (currently only for unhandled enum
         // values, but make sure it's inside the setup-error path).
-        rv = modmesh_bot::make_reviewer(cfg);
+        rv = solvcon_bot::make_reviewer(cfg);
         // Verify codexmon + the agent CLI are usable before spending a
         // long run on a doomed invocation.
         rv->preflight();
@@ -153,7 +153,7 @@ int main(int argc, char ** argv)
               << " stream_io=" << (cfg.reviewer_stream_io ? "on" : "off")
               << std::endl;
     if (cfg.reviewer_stream_io
-        && cfg.reviewer_kind != modmesh_bot::ReviewerKind::Mock)
+        && cfg.reviewer_kind != solvcon_bot::ReviewerKind::Mock)
     {
         std::cerr << "run-reviewer: stream_io is on — codexmon's stderr "
                      "(heartbeats + live agent events) is mirrored here "

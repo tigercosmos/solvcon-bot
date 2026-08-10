@@ -1,4 +1,4 @@
-# modmesh-bot — Plan
+# solvcon-bot — Plan
 
 A lightweight C++23 daemon that watches a GitHub repository's pull requests.
 The bot runs an AI code review when either:
@@ -16,8 +16,8 @@ on the PR diff, and the output is posted back as a PR comment.
 | | Decision | Detail |
 |---|---|---|
 | Q1 | HTTP library | **cpp-httplib**, pinned tag, vendored single header; HTTPS via OpenSSL 3 |
-| Q2 | JSON library | **modmesh `serialization/`** via git submodule (pinned commit) |
-| Reuse from modmesh | `base.hpp` + `serialization/SerializableItem.{hpp,cpp}` only | Adopt `MODMESH_EXCEPT`, `is_specialization_of_v` |
+| Q2 | JSON library | **solvcon `serialization/`** via git submodule (pinned commit) |
+| Reuse from solvcon | `base.hpp` + `serialization/SerializableItem.{hpp,cpp}` only | Adopt `SOLVCON_EXCEPT`, `is_specialization_of_v` |
 | Q3 (auto) | Re-review policy | Auto-review **once per PR** on first `APPROVED` review |
 | Q3a | Ping format | Word-boundary, case-insensitive `@<BOT_HANDLE>` in comment body (regex) |
 | Q3b | Ping authorization | **Repo collaborators only** — verified via `GET /repos/{o}/{r}/collaborators/{user}` |
@@ -26,7 +26,7 @@ on the PR diff, and the output is posted back as a PR comment.
 | Q5 | Reviewer dispatch | `REVIEWER_KIND` enum (`mock`/`claude`/`codex`/`cursor`). `mock` is a local `/bin/cat` echo. Every AI kind is **one** `AgentReviewer` class that runs the agent CLI through **[codexmon](https://github.com/tigercosmos/codexmon)** (`codexmon run --json --stdin --agent <kind> -- <agent args>`); codexmon owns supervision (heartbeats, idle/tool/wall watchdogs, event-stream parsing, result capture). `execvp` directly — **no shell** in the production path. codexmon is installed pinned + checksum-verified via `scripts/install_codexmon.sh`. |
 | Q6 | Poll interval | 30 s default |
 
-**Total third-party C++ deps:** two (cpp-httplib + modmesh). **Runtime link
+**Total third-party C++ deps:** two (cpp-httplib + solvcon). **Runtime link
 dep:** OpenSSL 3 (Homebrew `openssl@3` on macOS; distro `libssl-dev` on
 Linux).
 
@@ -53,17 +53,17 @@ Linux).
 
 ---
 
-## 3. Reuse of modmesh
+## 3. Reuse of solvcon
 
-| modmesh module | Verdict | Why |
+| solvcon module | Verdict | Why |
 |---|---|---|
-| `base.hpp` | **REUSE** | Small, self-contained. `MODMESH_EXCEPT`, `is_specialization_of_v`, stdlib includes. |
+| `base.hpp` | **REUSE** | Small, self-contained. `SOLVCON_EXCEPT`, `is_specialization_of_v`, stdlib includes. |
 | `serialization/` | **REUSE** | `SerializableItem` + `JsonHelper<T>` + `JsonNode` parser. |
 | `toggle/` | skip | Depends on `buffer/`; too heavy for env-var config. |
 | `buffer/`, `mesh/`, `inout/`, `linalg/`, `math/`, `simd/`, `spacetime/`, `multidim/`, `onedim/`, `transform/`, `device/`, `grid.hpp`, `oasis/`, `pilot/`, `python/`, `universe/` | skip | Irrelevant. |
 
-We **do not** rely on modmesh's internal CMake cache variables
-(`MODMESH_SERIALIZATION_SOURCES`); we list the two source files explicitly in
+We **do not** rely on solvcon's internal CMake cache variables
+(`SOLVCON_SERIALIZATION_SOURCES`); we list the two source files explicitly in
 our own CMake (see §13).
 
 ---
@@ -72,7 +72,7 @@ our own CMake (see §13).
 
 ```
             ┌──────────────────────────────────────────────────┐
-            │                     modmesh-bot                  │
+            │                     solvcon-bot                  │
             │                                                  │
    poll ───►│  PrWatcher                                       │
             │     ├─► auto path: list reviews (paginated)      │
@@ -90,14 +90,14 @@ our own CMake (see §13).
             │                       │ (diff on stdin)          │
             │                       ▼                          │
             │  GithubClient (httplib::Client, timeouts) ──────►│──► api.github.com
-            │     ├─► User-Agent: modmesh-bot/<ver>            │
+            │     ├─► User-Agent: solvcon-bot/<ver>            │
             │     ├─► X-GitHub-Api-Version: 2022-11-28         │
             │     ├─► Authorization: Bearer …                  │
             │     ├─► Accept: application/vnd.github+json      │
             │     └─► pagination via Link: rel="next"          │
             │                       │                          │
             │                       ▼                          │
-            │  modmesh::SerializableItem  (parse / emit)       │
+            │  solvcon::SerializableItem  (parse / emit)       │
             │                                                  │
             │  StateStore (flock'd)                            │
             │    • reviewed_prs : set<int>                     │
@@ -111,12 +111,12 @@ our own CMake (see §13).
 ## 5. Components & files
 
 ```
-modmesh-bot/
+solvcon-bot/
 ├── CMakeLists.txt
 ├── plan.md
 ├── third_party/
 │   ├── cpp-httplib/                vendored httplib.h @ pinned tag
-│   └── modmesh/                    git submodule → solvcon/modmesh @ pinned sha
+│   └── solvcon/                    git submodule → solvcon/solvcon @ pinned sha
 ├── src/
 │   ├── main.cpp
 │   ├── config.hpp / .cpp           env-var driven config (incl. REVIEWER_KIND + per-kind knobs)
@@ -142,7 +142,7 @@ All requests include:
 |---|---|
 | `Authorization` | `Bearer $GITHUB_TOKEN` |
 | `Accept` | `application/vnd.github+json` (or `application/vnd.github.diff` for diffs) |
-| `User-Agent` | `modmesh-bot/<version>` *(GitHub requires User-Agent)* |
+| `User-Agent` | `solvcon-bot/<version>` *(GitHub requires User-Agent)* |
 | `X-GitHub-Api-Version` | `2022-11-28` |
 
 | Purpose | Method | Endpoint | Notes |
@@ -169,36 +169,36 @@ absent. cpp-httplib gives us response headers via `httplib::Result::headers`.
 ## 7. Typed JSON wiring
 
 ```cpp
-struct User : modmesh::SerializableItem {
+struct User : solvcon::SerializableItem {
     std::string login;
     /* to/from_json overrides */
 };
 
-struct Review : modmesh::SerializableItem {
+struct Review : solvcon::SerializableItem {
     int64_t     id = 0;
     std::string state;          // "APPROVED", ...
     std::string submitted_at;
     User        user;
 };
 
-struct PrHead : modmesh::SerializableItem {
+struct PrHead : solvcon::SerializableItem {
     std::string sha;
 };
 
-struct PrSummary : modmesh::SerializableItem {
+struct PrSummary : solvcon::SerializableItem {
     int         number = 0;
     PrHead      head;        // GitHub nests sha inside `head`
     std::string updated_at;
 };
 
 // /repos/{o}/{r}/issues/{n} — used to verify open-PR-ness
-struct PrDetail : modmesh::SerializableItem {
+struct PrDetail : solvcon::SerializableItem {
     int         number = 0;
     std::string state;          // "open" / "closed"
     bool        is_pr = false;  // true iff "pull_request" key present
 };
 
-struct IssueComment : modmesh::SerializableItem {
+struct IssueComment : solvcon::SerializableItem {
     int64_t     id = 0;
     std::string body;
     std::string created_at;
@@ -209,7 +209,7 @@ struct IssueComment : modmesh::SerializableItem {
 ```
 
 Outgoing JSON (e.g. `{"body": "..."}`) emitted via
-`modmesh::detail::JsonHelper::to_json_string`.
+`solvcon::detail::JsonHelper::to_json_string`.
 
 ---
 
@@ -218,7 +218,7 @@ Outgoing JSON (e.g. `{"body": "..."}`) emitted via
 | Var | Required | Default | Purpose |
 |---|---|---|---|
 | `GITHUB_TOKEN` | yes | — | API auth |
-| `GITHUB_REPO` | yes | — | e.g. `tigercosmos/modmesh` |
+| `GITHUB_REPO` | yes | — | e.g. `tigercosmos/solvcon` |
 | `BOT_HANDLE` | yes | — | bot's GitHub username, no `@` |
 | `REVIEWER_KIND` | no | `mock` | One of `mock`/`claude`/`codex`/`cursor`. `mock` is local; all others run through codexmon. |
 | `CODEXMON_BIN` | no | `codexmon` | Path to the codexmon executable (default PATH lookup). `scripts/install_codexmon.sh` installs the pinned release. |
@@ -230,7 +230,7 @@ Outgoing JSON (e.g. `{"body": "..."}`) emitted via
 | `REVIEWER_MOCK_EXIT_CODE` | no | `0` | Mock-only. Non-zero makes the mock exit with this code (forced-failure tests). |
 | `REVIEWER_MOCK_OUTPUT` | no | — | Mock-only. If set, the mock prints this string instead of echoing the diff. |
 | `POLL_INTERVAL_SEC` | no | `30` | polling cadence |
-| `STATE_FILE` | no | `./modmesh-bot.state` | persistence + lock file |
+| `STATE_FILE` | no | `./solvcon-bot.state` | persistence + lock file |
 | `MAX_DIFF_BYTES` | no | `200000` | abort diff download past this |
 | `MAX_OUTPUT_BYTES` | no | `60000` | cap AI stdout (and stderr) capture |
 | `SUBPROCESS_TIMEOUT_SEC` | no | `300` | AI CLI hard timeout |
@@ -341,7 +341,7 @@ leaves the comment for the next tick.
 
 **Idempotency marker.** Every comment we post starts with an HTML comment:
 ```
-<!-- modmesh-bot/<ver> source=auto|ping pr=<n> trigger=<comment_id or "first-approval"> -->
+<!-- solvcon-bot/<ver> source=auto|ping pr=<n> trigger=<comment_id or "first-approval"> -->
 ```
 Before posting, we list the PR's comments and look for a matching marker
 authored by `BOT_HANDLE`. This makes the post step idempotent even if the
@@ -389,21 +389,21 @@ case-insensitive, `[A-Za-z0-9-]` charset, max 39 chars). Login comparisons
 
 - CMake ≥ 3.20, `cxx_std_23`, `-Wall -Wextra -Werror`.
 - `find_package(OpenSSL 3 REQUIRED)`.
-- **modmesh files listed explicitly** (no reliance on modmesh's cache vars):
+- **solvcon files listed explicitly** (no reliance on solvcon's cache vars):
   ```cmake
-  set(MODMESH_FILES
-      third_party/modmesh/cpp/modmesh/serialization/SerializableItem.cpp
-      third_party/modmesh/cpp/modmesh/serialization/SerializableItem.hpp)
-  target_sources(modmesh-bot PRIVATE ${MODMESH_FILES})
-  target_include_directories(modmesh-bot SYSTEM PRIVATE
-      third_party/modmesh/cpp
+  set(SOLVCON_FILES
+      third_party/solvcon/cpp/solvcon/serialization/SerializableItem.cpp
+      third_party/solvcon/cpp/solvcon/serialization/SerializableItem.hpp)
+  target_sources(solvcon-bot PRIVATE ${SOLVCON_FILES})
+  target_include_directories(solvcon-bot SYSTEM PRIVATE
+      third_party/solvcon/cpp
       third_party/cpp-httplib)
-  target_compile_definitions(modmesh-bot PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
-  target_link_libraries(modmesh-bot PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+  target_compile_definitions(solvcon-bot PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
+  target_link_libraries(solvcon-bot PRIVATE OpenSSL::SSL OpenSSL::Crypto)
   ```
   `SYSTEM` keeps third-party warnings out of our `-Werror` build.
 - **cpp-httplib pinned:** vendored from a specific release tag (e.g. `v0.18.5`), checked in with a `THIRD_PARTY_VERSIONS` note. Not pulled from `master`.
-- **modmesh pinned:** submodule pinned at a specific commit SHA; CI verifies the pinned SHA didn't drift.
+- **solvcon pinned:** submodule pinned at a specific commit SHA; CI verifies the pinned SHA didn't drift.
 
 **macOS / OpenSSL caveat.** macOS ships LibreSSL headers via the SDK but no
 linkable OpenSSL. Operator must `brew install openssl@3` and either set
@@ -415,8 +415,8 @@ but the operator must point the build at the brew install.
 Bootstrap for a fresh checkout (macOS shown):
 ```
 brew install openssl@3
-git submodule add https://github.com/solvcon/modmesh third_party/modmesh
-git -C third_party/modmesh checkout <pinned-sha>
+git submodule add https://github.com/solvcon/solvcon third_party/solvcon
+git -C third_party/solvcon checkout <pinned-sha>
 git submodule update --init --recursive
 mkdir -p third_party/cpp-httplib
 curl -L -o third_party/cpp-httplib/httplib.h \
@@ -458,7 +458,7 @@ This plan was reviewed by `codex exec`. Substantive fixes incorporated:
 11. **HTTP timeouts** + **streaming diff with abort** at `MAX_DIFF_BYTES` (§11).
 12. **OpenSSL 3 on macOS** documented (brew + `OPENSSL_ROOT_DIR`) (§13).
 13. **cpp-httplib pinned** to a release tag (§13).
-14. **modmesh files listed explicitly**, includes marked `SYSTEM` (§13).
+14. **solvcon files listed explicitly**, includes marked `SYSTEM` (§13).
 15. **Mention matching** via word-boundary regex, case-insensitive login eq (§9).
 
 Ready to start M1.

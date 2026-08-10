@@ -1,7 +1,7 @@
 #include "github_client.hpp"
 
 #include <httplib.h>
-#include <modmesh/serialization/SerializableItem.hpp>
+#include <solvcon/serialization/SerializableItem.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -15,10 +15,10 @@
 #include <thread>
 #include <unordered_map>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
-namespace mm_detail = modmesh::detail;
+namespace mm_detail = solvcon::detail;
 
 namespace github_detail
 {
@@ -194,7 +194,7 @@ struct GithubClient::Impl
         default_headers = {
             {"Authorization", std::string("Bearer ") + cfg.github_token},
             {"Accept", "application/vnd.github+json"},
-            {"User-Agent", std::string("modmesh-bot/") + MODMESH_BOT_VERSION},
+            {"User-Agent", std::string("solvcon-bot/") + SOLVCON_BOT_VERSION},
             {"X-GitHub-Api-Version", "2022-11-28"},
         };
 
@@ -655,7 +655,7 @@ DiffResult GithubClient::stream_diff(int pr_number)
 void GithubClient::post_comment(int issue_number, const std::string & body)
 {
     // Emit our own JSON for the body so that non-ASCII UTF-8 round-trips
-    // intact. See issue.md #3 for why modmesh's escape_string isn't used.
+    // intact. See issue.md #3 for why solvcon's escape_string isn't used.
     const std::string payload = "{\"body\":\""
         + github_detail::json_escape_utf8(body) + "\"}";
     auto res = impl_->post(impl_->repo_path + "/issues/"
@@ -668,4 +668,4 @@ void GithubClient::post_comment(int issue_number, const std::string & body)
     }
 }
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

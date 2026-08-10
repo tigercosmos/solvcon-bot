@@ -23,7 +23,7 @@ In one terminal, start the bot:
 
 ```bash
 set -a; source .env; set +a
-state="${STATE_FILE:-/tmp/modmesh-bot-e2e-auto.state}"
+state="${STATE_FILE:-/tmp/solvcon-bot-e2e-auto.state}"
 rm -f "$state" "$state.tmp" "$state.lock"
 
 GITHUB_TOKEN="$BOT_PAT" \
@@ -39,8 +39,8 @@ REVIEWER_MOCK_OUTPUT="${REVIEWER_MOCK_OUTPUT:-}" \
 REVIEWER_ENV_PASSTHROUGH="${REVIEWER_ENV_PASSTHROUGH:-}" \
 POLL_INTERVAL_SEC=10 \
 STATE_FILE="$state" \
-MODMESH_BOT_LOG_LEVEL=info \
-./build/modmesh-bot 2>&1 | tee /tmp/auto-e2e.log
+SOLVCON_BOT_LOG_LEVEL=info \
+./build/solvcon-bot 2>&1 | tee /tmp/auto-e2e.log
 ```
 
 In a second terminal (you must be signed in to gh as a non-author
@@ -50,7 +50,7 @@ collaborator):
 set -a; source .env; set +a
 gh pr review "$TEST_PR_NUMBER" --approve \
     --repo "$GITHUB_REPO" \
-    --body "automated approve for modmesh-bot e2e auto path"
+    --body "automated approve for solvcon-bot e2e auto path"
 ```
 
 Within `POLL_INTERVAL_SEC` of the approval landing the bot's log
@@ -65,7 +65,7 @@ should show:
 `$BOT_HANDLE`, body starting with:
 
 ```
-<!-- modmesh-bot/<ver> source=auto pr=<n> trigger=first-approval -->
+<!-- solvcon-bot/<ver> source=auto pr=<n> trigger=first-approval -->
 ```
 
 ## Idempotency check

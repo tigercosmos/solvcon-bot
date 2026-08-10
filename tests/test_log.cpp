@@ -61,7 +61,7 @@ void test_log_line_shape()
     std::string out;
     {
         CerrCapture cap;
-        modmesh_bot::log_info("foo", "hello");
+        solvcon_bot::log_info("foo", "hello");
         out = cap.str();
     }
     // YYYY-MM-DDTHH:MM:SS.mmmZ INFO foo hello\n
@@ -75,8 +75,8 @@ void test_log_levels_string()
     std::string out;
     {
         CerrCapture cap;
-        modmesh_bot::log_warn("c", "warned");
-        modmesh_bot::log_error("c", "broken");
+        solvcon_bot::log_warn("c", "warned");
+        solvcon_bot::log_error("c", "broken");
         out = cap.str();
     }
     EXPECT(out.find(" WARN c warned") != std::string::npos);
@@ -88,7 +88,7 @@ void test_log_sanitizes_embedded_newline()
     std::string out;
     {
         CerrCapture cap;
-        modmesh_bot::log_info("c", "line1\nline2");
+        solvcon_bot::log_info("c", "line1\nline2");
         out = cap.str();
     }
     // The literal \n should have been escaped to "\\n".
@@ -103,7 +103,7 @@ void test_log_sanitizes_embedded_cr()
     std::string out;
     {
         CerrCapture cap;
-        modmesh_bot::log_info("c", "foo\rbar");
+        solvcon_bot::log_info("c", "foo\rbar");
         out = cap.str();
     }
     EXPECT(out.find("foo\\rbar") != std::string::npos);
@@ -114,7 +114,7 @@ void test_log_sanitizes_other_control_chars()
     std::string out;
     {
         CerrCapture cap;
-        modmesh_bot::log_info("c", std::string("\x01\x02\x1f", 3));
+        solvcon_bot::log_info("c", std::string("\x01\x02\x1f", 3));
         out = cap.str();
     }
     // Three control bytes → three '?'.
@@ -126,7 +126,7 @@ void test_log_keeps_tabs()
     std::string out;
     {
         CerrCapture cap;
-        modmesh_bot::log_info("c", "a\tb");
+        solvcon_bot::log_info("c", "a\tb");
         out = cap.str();
     }
     // Tab is treated as printable for legibility.
@@ -138,7 +138,7 @@ void test_log_component_also_sanitized()
     std::string out;
     {
         CerrCapture cap;
-        modmesh_bot::log_info("ev\nil", "msg");
+        solvcon_bot::log_info("ev\nil", "msg");
         out = cap.str();
     }
     EXPECT(out.find("ev\\nil") != std::string::npos);

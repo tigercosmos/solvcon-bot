@@ -1,6 +1,6 @@
 #include "state_store.hpp"
 
-#include <modmesh/serialization/SerializableItem.hpp>
+#include <solvcon/serialization/SerializableItem.hpp>
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -16,24 +16,24 @@
 #include <utility>
 #include <vector>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 namespace
 {
 
-// The MM_DECL_SERIALIZABLE macro expands unqualified `detail::JsonNode` etc.,
-// so we alias modmesh::detail into the enclosing namespace for lookup.
-namespace detail = modmesh::detail;
+// The SC_DECL_SERIALIZABLE macro expands unqualified `detail::JsonNode` etc.,
+// so we alias solvcon::detail into the enclosing namespace for lookup.
+namespace detail = solvcon::detail;
 
-struct StateFile : modmesh::SerializableItem
+struct StateFile : solvcon::SerializableItem
 {
     std::vector<int> reviewed_prs;
     std::vector<std::int64_t> handled_comments;
     std::string cursor_updated_at;
     std::int64_t cursor_id = 0;
 
-    MM_DECL_SERIALIZABLE(
+    SC_DECL_SERIALIZABLE(
         register_member("reviewed_prs", reviewed_prs);
         register_member("handled_comments", handled_comments);
         register_member("cursor_updated_at", cursor_updated_at);
@@ -98,7 +98,7 @@ StateStore::StateStore(std::string path)
         if (err == EWOULDBLOCK)
         {
             throw std::runtime_error(
-                "another modmesh-bot instance holds the state lock: " + lock_path_);
+                "another solvcon-bot instance holds the state lock: " + lock_path_);
         }
         throw std::system_error(err, std::generic_category(),
             "flock lock file: " + lock_path_);
@@ -246,4 +246,4 @@ void StateStore::save()
     fsync_dir(parent_dir(path_));
 }
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

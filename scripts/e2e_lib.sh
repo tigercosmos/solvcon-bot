@@ -18,7 +18,7 @@
 #   e2e_post_mention BODY        -- post BODY as a comment from the
 #                                   gh-authed user. Sets MENTION_ID.
 #
-#   e2e_start_bot                -- launch ./build/modmesh-bot in the
+#   e2e_start_bot                -- launch ./build/solvcon-bot in the
 #                                   background with the env from
 #                                   e2e_setup. Sets BOT_PID.
 #
@@ -109,9 +109,9 @@ e2e_setup() {
     e2e_require BOT_PAT
     e2e_require TEST_PR_NUMBER
     : "${REVIEWER_KIND:=mock}"
-    : "${STATE_FILE:=/tmp/modmesh-bot-e2e.state}"
+    : "${STATE_FILE:=/tmp/solvcon-bot-e2e.state}"
 
-    BIN="${BIN:-./build/modmesh-bot}"
+    BIN="${BIN:-./build/solvcon-bot}"
     if [[ ! -x "$BIN" ]]; then
         echo "fatal: $BIN not found or not executable" >&2
         echo "  build first: cmake --build build" >&2
@@ -158,7 +158,7 @@ e2e_setup() {
         exit 1
     fi
 
-    BOT_LOG="${BOT_LOG:-/tmp/modmesh-bot-e2e.log}"
+    BOT_LOG="${BOT_LOG:-/tmp/solvcon-bot-e2e.log}"
     rm -f "$BOT_LOG"
 }
 
@@ -178,7 +178,7 @@ e2e_post_mention() {
 
 e2e_start_bot() {
     rm -f "$STATE_FILE" "$STATE_FILE.tmp" "$STATE_FILE.lock"
-    echo "==> starting modmesh-bot ($BIN)"
+    echo "==> starting solvcon-bot ($BIN)"
     echo "    REVIEWER_KIND: $REVIEWER_KIND"
     [[ -n "${REVIEWER_MODEL:-}" ]] && echo "    REVIEWER_MODEL: $REVIEWER_MODEL"
     [[ -n "${REVIEWER_EFFORT:-}" ]] && echo "    REVIEWER_EFFORT: $REVIEWER_EFFORT"
@@ -197,7 +197,7 @@ e2e_start_bot() {
     SUBPROCESS_TIMEOUT_SEC="${SUBPROCESS_TIMEOUT_SEC:-300}" \
     MAX_DIFF_BYTES="${MAX_DIFF_BYTES:-200000}" \
     STATE_FILE="$STATE_FILE" \
-    MODMESH_BOT_LOG_LEVEL=info \
+    SOLVCON_BOT_LOG_LEVEL=info \
     "$BIN" >"$BOT_LOG" 2>&1 &
     BOT_PID=$!
     echo "==> bot pid: $BOT_PID  log: $BOT_LOG"
@@ -336,7 +336,7 @@ e2e_bot_delete_comment() {
         -H "Authorization: Bearer $BOT_PAT" \
         -H "Accept: application/vnd.github+json" \
         -H "X-GitHub-Api-Version: 2022-11-28" \
-        -H "User-Agent: modmesh-bot-e2e" \
+        -H "User-Agent: solvcon-bot-e2e" \
         "https://api.github.com/repos/$GITHUB_REPO/issues/comments/$id" \
         || true
 }

@@ -49,8 +49,8 @@ int g_passed = 0;
         else { ++g_passed; }                                                 \
     } while (0)
 
-using modmesh_bot::Config;
-using modmesh_bot::ReviewerKind;
+using solvcon_bot::Config;
+using solvcon_bot::ReviewerKind;
 
 const char * const k_all_vars[] = {
     "GITHUB_TOKEN", "GITHUB_REPO", "BOT_HANDLE",
@@ -109,7 +109,7 @@ void test_required_only_defaults_to_mock()
 
     // Numeric defaults from plan.md §8.
     EXPECT_EQ(c.poll_interval_sec, 30);
-    EXPECT_EQ(c.state_file, std::string("./modmesh-bot.state"));
+    EXPECT_EQ(c.state_file, std::string("./solvcon-bot.state"));
     EXPECT_EQ(c.max_diff_bytes, static_cast<std::size_t>(200000));
     EXPECT_EQ(c.max_output_bytes, static_cast<std::size_t>(60000));
     EXPECT_EQ(c.subprocess_timeout_sec, 300);
@@ -254,7 +254,7 @@ void test_reviewer_prompt_literal()
 
 void test_reviewer_prompt_from_file()
 {
-    char path_buf[] = "/tmp/modmesh-bot-prompt-XXXXXX";
+    char path_buf[] = "/tmp/solvcon-bot-prompt-XXXXXX";
     int fd = ::mkstemp(path_buf);
     EXPECT(fd >= 0);
     if (fd < 0) return;
@@ -284,14 +284,14 @@ void test_reviewer_prompt_file_missing()
 {
     clear_env();
     set_required_defaults();
-    ::setenv("REVIEWER_PROMPT_FILE", "/no/such/file-modmesh-bot-test", 1);
+    ::setenv("REVIEWER_PROMPT_FILE", "/no/such/file-solvcon-bot-test", 1);
     EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "REVIEWER_PROMPT_FILE"));
 }
 
 void test_reviewer_prompt_file_too_large()
 {
     // Build a 300 KB file; cap is 256 KB.
-    char path_buf[] = "/tmp/modmesh-bot-prompt-XXXXXX";
+    char path_buf[] = "/tmp/solvcon-bot-prompt-XXXXXX";
     int fd = ::mkstemp(path_buf);
     EXPECT(fd >= 0);
     if (fd < 0) return;

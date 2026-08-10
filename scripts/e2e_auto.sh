@@ -36,7 +36,7 @@ if [[ "$(e2e_lc "$pr_author")" == "$(e2e_lc "$USER_LOGIN")" ]]; then
 fi
 
 EXPECTED_KEY="source=auto pr=${TEST_PR_NUMBER} trigger=first-approval -->"
-APPROVAL_BODY="modmesh-bot e2e auto path $NONCE"
+APPROVAL_BODY="solvcon-bot e2e auto path $NONCE"
 
 # A PR's reviews are a long-lived record. If a prior APPROVED review
 # is hanging around, the bot would react to it on its first tick and
@@ -52,7 +52,7 @@ dismiss_existing_approvals() {
         echo "==> dismissing stale APPROVED review id=$rid"
         gh api "repos/$GITHUB_REPO/pulls/$TEST_PR_NUMBER/reviews/$rid/dismissals" \
             --method PUT \
-            -f message="dismissed by modmesh-bot e2e setup" \
+            -f message="dismissed by solvcon-bot e2e setup" \
             --silent >/dev/null 2>&1 || true
     done
 }
@@ -74,7 +74,7 @@ cleanup() {
             echo "==> dismissing created APPROVED review id=$CREATED_REVIEW_ID"
             gh api "repos/$GITHUB_REPO/pulls/$TEST_PR_NUMBER/reviews/$CREATED_REVIEW_ID/dismissals" \
                 --method PUT \
-                -f message="dismissed by modmesh-bot e2e cleanup" \
+                -f message="dismissed by solvcon-bot e2e cleanup" \
                 --silent >/dev/null 2>&1 || true
         fi
     fi

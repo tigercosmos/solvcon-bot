@@ -24,8 +24,8 @@ int g_passed = 0;
         else { ++g_passed; }                                                 \
     } while (0)
 
-using modmesh_bot::eq_login;
-using modmesh_bot::mention_matches;
+using solvcon_bot::eq_login;
+using solvcon_bot::mention_matches;
 
 // --- mention_matches positive --------------------------------------------
 

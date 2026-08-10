@@ -41,7 +41,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libssl-dev cmake build-essential
 
-      # Drives apply_modmesh_patches.sh, cmake configure, cmake build,
+      # Drives apply_solvcon_patches.sh, cmake configure, cmake build,
       # then ctest. Same code path a developer hits locally with
       # `make` + `make test`.
       - name: Build

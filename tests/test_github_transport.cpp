@@ -54,10 +54,10 @@ int g_passed = 0;
         else { ++g_passed; }                                                 \
     } while (0)
 
-using modmesh_bot::Config;
-using modmesh_bot::DiffResult;
-using modmesh_bot::GithubClient;
-using modmesh_bot::GithubError;
+using solvcon_bot::Config;
+using solvcon_bot::DiffResult;
+using solvcon_bot::GithubClient;
+using solvcon_bot::GithubError;
 
 class TestServer
 {
@@ -195,7 +195,7 @@ void test_default_headers_are_attached()
     GithubClient gh(make_cfg(ts));
     (void)gh.list_open_prs();
     EXPECT_EQ(captured_auth, std::string("Bearer test-token"));
-    EXPECT(captured_ua.find("modmesh-bot/") == 0);
+    EXPECT(captured_ua.find("solvcon-bot/") == 0);
     EXPECT_EQ(captured_accept, std::string("application/vnd.github+json"));
     EXPECT_EQ(captured_api_ver, std::string("2022-11-28"));
 }

@@ -21,7 +21,7 @@ REVIEWER_KIND=claude
 
 # --- fake codexmon ---------------------------------------------------------
 
-FAKE_DIR=$(mktemp -d /tmp/modmesh-bot-e2e-fake-codexmon.XXXXXX)
+FAKE_DIR=$(mktemp -d /tmp/solvcon-bot-e2e-fake-codexmon.XXXXXX)
 FAKE_REVIEW="fake-codexmon review $NONCE: the diff looks reviewable."
 printf '%s\n' "$FAKE_REVIEW" > "$FAKE_DIR/result.txt"
 
@@ -45,7 +45,7 @@ chmod +x "$FAKE_DIR/codexmon"
 export CODEXMON_BIN="$FAKE_DIR/codexmon"
 echo "==> fake codexmon: $CODEXMON_BIN"
 
-MENTION_BODY="modmesh-bot e2e agent-fake $NONCE — @${BOT_HANDLE} please review"
+MENTION_BODY="solvcon-bot e2e agent-fake $NONCE — @${BOT_HANDLE} please review"
 e2e_post_mention "$MENTION_BODY"
 
 cleanup() {

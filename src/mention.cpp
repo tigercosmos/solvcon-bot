@@ -3,7 +3,7 @@
 #include <cctype>
 #include <string_view>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 namespace
@@ -81,4 +81,4 @@ bool eq_login(std::string_view a, std::string_view b)
     return true;
 }
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

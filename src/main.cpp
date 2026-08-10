@@ -44,26 +44,26 @@ int main()
 {
     try
     {
-        auto cfg = modmesh_bot::Config::from_env();
-        modmesh_bot::log_info("main",
-            std::string("starting modmesh-bot ") + MODMESH_BOT_VERSION
+        auto cfg = solvcon_bot::Config::from_env();
+        solvcon_bot::log_info("main",
+            std::string("starting solvcon-bot ") + SOLVCON_BOT_VERSION
             + " repo=" + cfg.github_owner + "/" + cfg.github_repo
             + " bot=@" + cfg.bot_handle
             + " poll=" + std::to_string(cfg.poll_interval_sec) + "s");
 
-        modmesh_bot::StateStore state(cfg.state_file);
-        modmesh_bot::log_info("main", "state file locked: " + cfg.state_file);
+        solvcon_bot::StateStore state(cfg.state_file);
+        solvcon_bot::log_info("main", "state file locked: " + cfg.state_file);
 
-        modmesh_bot::GithubClient gh(cfg);
-        auto rv = modmesh_bot::make_reviewer(cfg);
+        solvcon_bot::GithubClient gh(cfg);
+        auto rv = solvcon_bot::make_reviewer(cfg);
         // Fail at startup — not on the first PR hours later — when the
         // reviewer's external dependency (codexmon + the agent CLI) is
         // missing or broken.
         rv->preflight();
-        modmesh_bot::log_info("main",
-            std::string("reviewer kind=") + modmesh_bot::to_string(cfg.reviewer_kind));
-        modmesh_bot::LiveWatcherIo io(gh, *rv, state);
-        modmesh_bot::Watcher watcher(cfg, io);
+        solvcon_bot::log_info("main",
+            std::string("reviewer kind=") + solvcon_bot::to_string(cfg.reviewer_kind));
+        solvcon_bot::LiveWatcherIo io(gh, *rv, state);
+        solvcon_bot::Watcher watcher(cfg, io);
 
         install_signal_handlers();
 
@@ -73,25 +73,25 @@ int main()
             {
                 watcher.tick();
             }
-            catch (const modmesh_bot::GithubError & e)
+            catch (const solvcon_bot::GithubError & e)
             {
                 // 401/403/422 from GitHub are not transient — keep
                 // looping would just keep failing. Surface to operator.
                 if (e.status() == 401 || e.status() == 403 || e.status() == 422)
                 {
-                    modmesh_bot::log_error("main",
+                    solvcon_bot::log_error("main",
                         "fatal HTTP " + std::to_string(e.status()) + ": "
                         + e.what() + " — exiting non-zero so operator notices");
                     state.save();
                     return 1;
                 }
-                modmesh_bot::log_warn("main",
+                solvcon_bot::log_warn("main",
                     "tick GithubError " + std::to_string(e.status()) + ": "
                     + e.what());
             }
             catch (const std::exception & e)
             {
-                modmesh_bot::log_warn("main",
+                solvcon_bot::log_warn("main",
                     std::string("tick error: ") + e.what());
             }
             // Sleep in short slices so signals interrupt within ~1s.
@@ -101,13 +101,13 @@ int main()
             }
         }
 
-        modmesh_bot::log_info("main", "shutting down");
+        solvcon_bot::log_info("main", "shutting down");
         state.save();
         return 0;
     }
     catch (const std::exception & e)
     {
-        modmesh_bot::log_error("main", std::string("fatal: ") + e.what());
+        solvcon_bot::log_error("main", std::string("fatal: ") + e.what());
         return 1;
     }
 }

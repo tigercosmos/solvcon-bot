@@ -5,7 +5,7 @@
 #include <utility>
 #include <vector>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 struct RunResult
@@ -62,4 +62,4 @@ RunResult run_subprocess(
     const std::vector<std::pair<std::string, std::string>> & extra_env_values = {},
     bool tee_child_io_to_stderr = false);
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

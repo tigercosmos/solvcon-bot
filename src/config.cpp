@@ -11,7 +11,7 @@
 #include <system_error>
 #include <vector>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 namespace
@@ -348,4 +348,4 @@ Config Config::from_env()
     return cfg;
 }
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

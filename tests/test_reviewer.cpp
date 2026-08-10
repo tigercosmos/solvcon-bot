@@ -18,12 +18,12 @@
 #include <string>
 #include <vector>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 // Test-only handle defined in reviewer_agent.cpp.
 ReviewerInvocation agent_build_invocation_for_test(
     const Config & cfg, const std::string & diff);
-} // namespace modmesh_bot
+} // namespace solvcon_bot
 
 namespace
 {
@@ -59,11 +59,11 @@ int g_passed = 0;
         else { ++g_passed; }                                                 \
     } while (0)
 
-using modmesh_bot::Config;
-using modmesh_bot::ReviewerError;
-using modmesh_bot::ReviewerKind;
+using solvcon_bot::Config;
+using solvcon_bot::ReviewerError;
+using solvcon_bot::ReviewerKind;
 
-namespace mb = modmesh_bot;
+namespace mb = solvcon_bot;
 
 Config make_cfg(ReviewerKind kind)
 {
@@ -104,7 +104,7 @@ struct FakeCodexmon
 
     FakeCodexmon()
     {
-        char tmpl[] = "/tmp/modmesh-bot-fake-codexmon-XXXXXX";
+        char tmpl[] = "/tmp/solvcon-bot-fake-codexmon-XXXXXX";
         char * d = ::mkdtemp(tmpl);
         if (d == nullptr) throw std::runtime_error("mkdtemp failed");
         dir = d;
@@ -184,7 +184,7 @@ void test_truncation_note_appended_only_when_truncated()
 {
     EXPECT_EQ(mb::maybe_append_truncation_note("hi", false), std::string("hi"));
     const std::string out = mb::maybe_append_truncation_note("hi", true);
-    EXPECT(out.find("modmesh-bot: reviewer output truncated") != std::string::npos);
+    EXPECT(out.find("solvcon-bot: reviewer output truncated") != std::string::npos);
     EXPECT(out.find("hi") == 0);
 }
 

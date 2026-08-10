@@ -47,7 +47,7 @@ int g_passed = 0;
         else { ++g_passed; }                                                 \
     } while (0)
 
-using modmesh_bot::StateStore;
+using solvcon_bot::StateStore;
 
 std::filesystem::path g_tmp_dir;
 
@@ -278,7 +278,7 @@ int main()
 {
     // Per-process tmp dir so concurrent test runs don't collide.
     g_tmp_dir = std::filesystem::temp_directory_path()
-        / ("modmesh-bot-state-" + std::to_string(getpid()));
+        / ("solvcon-bot-state-" + std::to_string(getpid()));
     std::filesystem::create_directories(g_tmp_dir);
 
     test_round_trip_basic();

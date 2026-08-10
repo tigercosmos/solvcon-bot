@@ -49,31 +49,31 @@ int g_passed = 0;
         else { ++g_passed; }                                                 \
     } while (0)
 
-using modmesh_bot::body_has_marker_key;
-using modmesh_bot::build_marker;
-using modmesh_bot::build_marker_key;
-using modmesh_bot::Config;
-using modmesh_bot::DiffResult;
-using modmesh_bot::IssueComment;
-using modmesh_bot::PrSummary;
-using modmesh_bot::Review;
-using modmesh_bot::User;
-using modmesh_bot::Watcher;
-using modmesh_bot::WatcherIo;
+using solvcon_bot::body_has_marker_key;
+using solvcon_bot::build_marker;
+using solvcon_bot::build_marker_key;
+using solvcon_bot::Config;
+using solvcon_bot::DiffResult;
+using solvcon_bot::IssueComment;
+using solvcon_bot::PrSummary;
+using solvcon_bot::Review;
+using solvcon_bot::User;
+using solvcon_bot::Watcher;
+using solvcon_bot::WatcherIo;
 
 // --- Marker contract ------------------------------------------------------
 
 void test_marker_exact_string_auto()
 {
     const std::string m = build_marker("auto", 42, std::nullopt);
-    EXPECT_EQ(m, std::string("<!-- modmesh-bot/") + MODMESH_BOT_VERSION
+    EXPECT_EQ(m, std::string("<!-- solvcon-bot/") + SOLVCON_BOT_VERSION
                  + " source=auto pr=42 trigger=first-approval -->");
 }
 
 void test_marker_exact_string_ping()
 {
     const std::string m = build_marker("ping", 7, 12345678LL);
-    EXPECT_EQ(m, std::string("<!-- modmesh-bot/") + MODMESH_BOT_VERSION
+    EXPECT_EQ(m, std::string("<!-- solvcon-bot/") + SOLVCON_BOT_VERSION
                  + " source=ping pr=7 trigger=12345678 -->");
 }
 
@@ -81,7 +81,7 @@ void test_marker_key_excludes_version()
 {
     const std::string k = build_marker_key("auto", 42, std::nullopt);
     EXPECT_EQ(k, std::string("source=auto pr=42 trigger=first-approval -->"));
-    EXPECT(k.find("modmesh-bot/") == std::string::npos);
+    EXPECT(k.find("solvcon-bot/") == std::string::npos);
 }
 
 void test_marker_key_present_in_marker()
@@ -95,7 +95,7 @@ void test_marker_key_survives_version_bump()
 {
     // A comment was posted by an old version; the key still matches.
     const std::string old_marker =
-        "<!-- modmesh-bot/0.0.0-old source=auto pr=42 trigger=first-approval -->";
+        "<!-- solvcon-bot/0.0.0-old source=auto pr=42 trigger=first-approval -->";
     const std::string body = old_marker + "\n\nold review\n";
     const std::string k = build_marker_key("auto", 42, std::nullopt);
     EXPECT(body_has_marker_key(body, k));
@@ -119,13 +119,13 @@ void test_body_has_marker_key_unrelated_html_does_not_match()
 
 // --- Fake WatcherIo for control-flow tests --------------------------------
 
-struct FakeWatcherIo : modmesh_bot::WatcherIo
+struct FakeWatcherIo : solvcon_bot::WatcherIo
 {
     std::vector<PrSummary> prs;
     std::map<int, std::vector<Review>> reviews;
     std::map<int, std::vector<IssueComment>> comments; // PR-scoped
     std::vector<IssueComment> issue_comments_stream;   // repo-wide stream
-    std::map<int, modmesh_bot::PrDetail> details;
+    std::map<int, solvcon_bot::PrDetail> details;
     std::set<std::string> collaborators;
     std::map<int, DiffResult> diffs;
     std::string reviewer_output = "## review\n\nlgtm\n";
@@ -202,7 +202,7 @@ struct FakeWatcherIo : modmesh_bot::WatcherIo
             throw std::runtime_error("simulated post_comment failure");
         posts.push_back({n, body});
     }
-    modmesh_bot::PrDetail get_issue_detail(int n) override
+    solvcon_bot::PrDetail get_issue_detail(int n) override
     {
         if (throw_on_get_issue_detail_for_pr
             && throw_on_get_issue_detail_for_n == n)
@@ -211,7 +211,7 @@ struct FakeWatcherIo : modmesh_bot::WatcherIo
         }
         auto it = details.find(n);
         if (it != details.end()) return it->second;
-        modmesh_bot::PrDetail d;
+        solvcon_bot::PrDetail d;
         d.number = n;
         d.state = "open";
         d.is_pr = false;
@@ -268,11 +268,11 @@ struct FakeWatcherIo : modmesh_bot::WatcherIo
     void save_state() override { ++save_state_calls; }
 };
 
-modmesh_bot::IssueComment make_issue_comment(
+solvcon_bot::IssueComment make_issue_comment(
     std::int64_t id, const std::string & login, const std::string & body,
     const std::string & updated_at, int issue_n)
 {
-    modmesh_bot::IssueComment c;
+    solvcon_bot::IssueComment c;
     c.id = id;
     c.user.login = login;
     c.body = body;
@@ -283,9 +283,9 @@ modmesh_bot::IssueComment make_issue_comment(
     return c;
 }
 
-modmesh_bot::PrDetail make_pr_detail(int n, const std::string & state, bool is_pr)
+solvcon_bot::PrDetail make_pr_detail(int n, const std::string & state, bool is_pr)
 {
-    modmesh_bot::PrDetail d;
+    solvcon_bot::PrDetail d;
     d.number = n;
     d.state = state;
     d.is_pr = is_pr;
@@ -295,7 +295,7 @@ modmesh_bot::PrDetail make_pr_detail(int n, const std::string & state, bool is_p
 Config make_cfg()
 {
     Config c;
-    c.bot_handle = "modmesh-bot";
+    c.bot_handle = "solvcon-bot";
     c.max_diff_bytes = 200000;
     return c;
 }
@@ -388,8 +388,8 @@ void test_auto_path_marker_dedupe_skips_post_but_marks_reviewed()
     // Pre-existing bot comment with the marker. Even the OLD version
     // string should still match because dedupe uses the key.
     io.comments[42] = {
-        make_comment(99, "modmesh-bot",
-            "<!-- modmesh-bot/0.0.0-old source=auto pr=42 trigger=first-approval -->\n"
+        make_comment(99, "solvcon-bot",
+            "<!-- solvcon-bot/0.0.0-old source=auto pr=42 trigger=first-approval -->\n"
             "old review")
     };
     Watcher w(make_cfg(), io);
@@ -408,7 +408,7 @@ void test_auto_path_marker_dedupe_ignores_other_users_markers()
     // marker-shaped string. We should still dispatch.
     io.comments[42] = {
         make_comment(99, "alice",
-            std::string("see <!-- modmesh-bot/0.0.0-old source=auto pr=42 ")
+            std::string("see <!-- solvcon-bot/0.0.0-old source=auto pr=42 ")
             + "trigger=first-approval --> note")
     };
     Watcher w(make_cfg(), io);
@@ -491,7 +491,7 @@ void test_ping_path_collaborator_with_mention_dispatches()
 {
     FakeWatcherIo io;
     io.issue_comments_stream = {
-        make_issue_comment(1001, "alice", "@modmesh-bot please review",
+        make_issue_comment(1001, "alice", "@solvcon-bot please review",
                            "2026-05-01T10:00:00Z", 42)
     };
     io.details[42] = make_pr_detail(42, "open", true);
@@ -514,7 +514,7 @@ void test_ping_path_non_collaborator_ignored()
 {
     FakeWatcherIo io;
     io.issue_comments_stream = {
-        make_issue_comment(1001, "drive-by", "@modmesh-bot please review",
+        make_issue_comment(1001, "drive-by", "@solvcon-bot please review",
                            "2026-05-01T10:00:00Z", 42)
     };
     io.details[42] = make_pr_detail(42, "open", true);
@@ -534,7 +534,7 @@ void test_ping_path_issue_not_pr_ignored()
 {
     FakeWatcherIo io;
     io.issue_comments_stream = {
-        make_issue_comment(1001, "alice", "@modmesh-bot please review",
+        make_issue_comment(1001, "alice", "@solvcon-bot please review",
                            "2026-05-01T10:00:00Z", 11)
     };
     io.details[11] = make_pr_detail(11, "open", /*is_pr=*/false);
@@ -553,7 +553,7 @@ void test_ping_path_closed_pr_ignored()
 {
     FakeWatcherIo io;
     io.issue_comments_stream = {
-        make_issue_comment(1001, "alice", "@modmesh-bot please review",
+        make_issue_comment(1001, "alice", "@solvcon-bot please review",
                            "2026-05-01T10:00:00Z", 42)
     };
     io.details[42] = make_pr_detail(42, "closed", true);
@@ -571,12 +571,12 @@ void test_ping_path_self_mention_ignored()
 {
     FakeWatcherIo io;
     io.issue_comments_stream = {
-        make_issue_comment(1001, "modmesh-bot",
-                           "<!-- our previous post --> @modmesh-bot self-ref",
+        make_issue_comment(1001, "solvcon-bot",
+                           "<!-- our previous post --> @solvcon-bot self-ref",
                            "2026-05-01T10:00:00Z", 42)
     };
     io.details[42] = make_pr_detail(42, "open", true);
-    io.collaborators.insert("modmesh-bot");
+    io.collaborators.insert("solvcon-bot");
 
     Watcher w(make_cfg(), io);
     w.tick();
@@ -608,7 +608,7 @@ void test_ping_path_already_handled_skipped()
 {
     FakeWatcherIo io;
     io.issue_comments_stream = {
-        make_issue_comment(1001, "alice", "@modmesh-bot please review",
+        make_issue_comment(1001, "alice", "@solvcon-bot please review",
                            "2026-05-01T10:00:00Z", 42)
     };
     io.details[42] = make_pr_detail(42, "open", true);
@@ -629,7 +629,7 @@ void test_ping_path_at_cursor_skipped()
     io.cursor_at = "2026-05-01T10:00:00Z";
     io.cursor_idval = 1001;
     io.issue_comments_stream = {
-        make_issue_comment(1001, "alice", "@modmesh-bot please review",
+        make_issue_comment(1001, "alice", "@solvcon-bot please review",
                            "2026-05-01T10:00:00Z", 42)
     };
     io.details[42] = make_pr_detail(42, "open", true);
@@ -645,15 +645,15 @@ void test_ping_path_marker_dedupe_skips_post()
 {
     FakeWatcherIo io;
     io.issue_comments_stream = {
-        make_issue_comment(1001, "alice", "@modmesh-bot please review",
+        make_issue_comment(1001, "alice", "@solvcon-bot please review",
                            "2026-05-01T10:00:00Z", 42)
     };
     io.details[42] = make_pr_detail(42, "open", true);
     io.collaborators.insert("alice");
     // Pre-existing bot post matching this exact trigger.
     io.comments[42] = {
-        make_comment(99, "modmesh-bot",
-            "<!-- modmesh-bot/0.0.1 source=ping pr=42 trigger=1001 -->\n"
+        make_comment(99, "solvcon-bot",
+            "<!-- solvcon-bot/0.0.1 source=ping pr=42 trigger=1001 -->\n"
             "previous response")
     };
 
@@ -669,7 +669,7 @@ void test_ping_path_collaborator_403_is_fatal()
 {
     FakeWatcherIo io;
     io.issue_comments_stream = {
-        make_issue_comment(1001, "alice", "@modmesh-bot please review",
+        make_issue_comment(1001, "alice", "@solvcon-bot please review",
                            "2026-05-01T10:00:00Z", 42)
     };
     io.details[42] = make_pr_detail(42, "open", true);
@@ -688,7 +688,7 @@ void test_ping_path_get_issue_detail_transient_keeps_for_retry()
 {
     FakeWatcherIo io;
     io.issue_comments_stream = {
-        make_issue_comment(1001, "alice", "@modmesh-bot please review",
+        make_issue_comment(1001, "alice", "@solvcon-bot please review",
                            "2026-05-01T10:00:00Z", 42)
     };
     io.throw_on_get_issue_detail_for_pr = true;
@@ -723,9 +723,9 @@ void test_ping_path_sorts_by_updated_at_then_id()
     FakeWatcherIo io;
     // Adversarial order: id-descending at the same updated_at.
     io.issue_comments_stream = {
-        make_issue_comment(1003, "alice", "@modmesh-bot one", "2026-05-01T10:00:00Z", 42),
-        make_issue_comment(1001, "alice", "@modmesh-bot two", "2026-05-01T10:00:00Z", 42),
-        make_issue_comment(1002, "alice", "@modmesh-bot three", "2026-05-01T10:00:00Z", 42),
+        make_issue_comment(1003, "alice", "@solvcon-bot one", "2026-05-01T10:00:00Z", 42),
+        make_issue_comment(1001, "alice", "@solvcon-bot two", "2026-05-01T10:00:00Z", 42),
+        make_issue_comment(1002, "alice", "@solvcon-bot three", "2026-05-01T10:00:00Z", 42),
     };
     io.details[42] = make_pr_detail(42, "open", true);
     io.collaborators.insert("alice");
@@ -740,9 +740,9 @@ void test_ping_path_transient_failure_stops_loop_no_cursor_leak()
 {
     FakeWatcherIo io;
     io.issue_comments_stream = {
-        make_issue_comment(1001, "alice", "@modmesh-bot please review",
+        make_issue_comment(1001, "alice", "@solvcon-bot please review",
                            "2026-05-01T10:00:00Z", 42),
-        make_issue_comment(1002, "alice", "@modmesh-bot also this",
+        make_issue_comment(1002, "alice", "@solvcon-bot also this",
                            "2026-05-01T10:00:05Z", 99),
     };
     io.details[99] = make_pr_detail(99, "open", true);
@@ -765,7 +765,7 @@ void test_ping_path_two_comments_advances_cursor_to_last()
 {
     FakeWatcherIo io;
     io.issue_comments_stream = {
-        make_issue_comment(1001, "alice", "@modmesh-bot please review",
+        make_issue_comment(1001, "alice", "@solvcon-bot please review",
                            "2026-05-01T10:00:00Z", 42),
         make_issue_comment(1002, "bob", "not a mention",
                            "2026-05-01T10:00:05Z", 42)

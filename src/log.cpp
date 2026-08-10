@@ -8,7 +8,7 @@
 #include <iostream>
 #include <mutex>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 namespace
@@ -85,7 +85,7 @@ std::mutex & log_mutex()
 
 LogLevel current_log_level()
 {
-    static LogLevel cached = parse_level(std::getenv("MODMESH_BOT_LOG_LEVEL"));
+    static LogLevel cached = parse_level(std::getenv("SOLVCON_BOT_LOG_LEVEL"));
     return cached;
 }
 
@@ -123,4 +123,4 @@ void log(LogLevel level, std::string_view component, std::string_view msg)
     std::cerr.flush();
 }
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

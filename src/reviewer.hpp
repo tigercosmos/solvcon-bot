@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 class ReviewerError : public std::runtime_error
@@ -90,4 +90,4 @@ std::string assemble_review_stdin(const std::string & prompt,
 // truncated.
 std::string maybe_append_truncation_note(std::string body, bool truncated);
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

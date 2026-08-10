@@ -1,54 +1,54 @@
 #pragma once
 
-#include <modmesh/serialization/SerializableItem.hpp>
+#include <solvcon/serialization/SerializableItem.hpp>
 
 #include <cstdint>
 #include <string>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
-// The MM_DECL_SERIALIZABLE macro expands to unqualified detail::JsonNode
-// etc., so we alias modmesh::detail into the enclosing namespace.
-namespace detail = modmesh::detail;
+// The SC_DECL_SERIALIZABLE macro expands to unqualified detail::JsonNode
+// etc., so we alias solvcon::detail into the enclosing namespace.
+namespace detail = solvcon::detail;
 
-struct User : modmesh::SerializableItem
+struct User : solvcon::SerializableItem
 {
     std::string login;
 
-    MM_DECL_SERIALIZABLE(
+    SC_DECL_SERIALIZABLE(
         register_member("login", login);)
 };
 
-struct Review : modmesh::SerializableItem
+struct Review : solvcon::SerializableItem
 {
     std::int64_t id = 0;
     std::string state;
     std::string submitted_at;
     User user;
 
-    MM_DECL_SERIALIZABLE(
+    SC_DECL_SERIALIZABLE(
         register_member("id", id);
         register_member("state", state);
         register_member("submitted_at", submitted_at);
         register_member("user", user);)
 };
 
-struct PrHead : modmesh::SerializableItem
+struct PrHead : solvcon::SerializableItem
 {
     std::string sha;
 
-    MM_DECL_SERIALIZABLE(
+    SC_DECL_SERIALIZABLE(
         register_member("sha", sha);)
 };
 
-struct PrSummary : modmesh::SerializableItem
+struct PrSummary : solvcon::SerializableItem
 {
     int number = 0;
     PrHead head;
     std::string updated_at;
 
-    MM_DECL_SERIALIZABLE(
+    SC_DECL_SERIALIZABLE(
         register_member("number", number);
         register_member("head", head);
         register_member("updated_at", updated_at);)
@@ -57,7 +57,7 @@ struct PrSummary : modmesh::SerializableItem
 // GET /repos/{o}/{r}/issues/{n} — `pull_request` is present iff the issue
 // is actually a PR. is_pr is derived from key presence; the macro can't
 // express that, so PrDetail has hand-rolled to/from JSON.
-struct PrDetail : modmesh::SerializableItem
+struct PrDetail : solvcon::SerializableItem
 {
     int number = 0;
     std::string state;
@@ -67,7 +67,7 @@ struct PrDetail : modmesh::SerializableItem
     void from_json(const std::string & json) override;
 };
 
-struct IssueComment : modmesh::SerializableItem
+struct IssueComment : solvcon::SerializableItem
 {
     std::int64_t id = 0;
     std::string body;
@@ -76,7 +76,7 @@ struct IssueComment : modmesh::SerializableItem
     std::string issue_url;
     User user;
 
-    MM_DECL_SERIALIZABLE(
+    SC_DECL_SERIALIZABLE(
         register_member("id", id);
         register_member("body", body);
         register_member("created_at", created_at);
@@ -90,4 +90,4 @@ struct IssueComment : modmesh::SerializableItem
 // integer is found at the end.
 int parse_issue_number_from_url(const std::string & issue_url);
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

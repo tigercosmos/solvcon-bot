@@ -1,7 +1,7 @@
 /build/
-/modmesh-bot.state
-/modmesh-bot.state.tmp
-/modmesh-bot.state.lock
+/solvcon-bot.state
+/solvcon-bot.state.tmp
+/solvcon-bot.state.lock
 /.env
 /scripts/e2e.env
 /tmp/

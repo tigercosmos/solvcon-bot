@@ -44,8 +44,8 @@ int g_passed = 0;
         else { ++g_passed; }                                                 \
     } while (0)
 
-using modmesh_bot::run_subprocess;
-using modmesh_bot::RunResult;
+using solvcon_bot::run_subprocess;
+using solvcon_bot::RunResult;
 
 void test_cat_echo()
 {
@@ -101,7 +101,7 @@ void test_timeout_kills_long_sleep()
 void test_spawn_failure_for_missing_binary()
 {
     RunResult r = run_subprocess(
-        {"/no/such/binary-modmesh-bot-test"}, "", 4096, 5);
+        {"/no/such/binary-solvcon-bot-test"}, "", 4096, 5);
     // execvp failure in the child → exit 127.
     EXPECT_EQ(r.exit_status, 127);
     EXPECT(!r.stderr_buf.empty()); // our "execvp failed" line
@@ -160,43 +160,43 @@ void test_default_env_passes_user_and_logname()
 void test_extra_env_allowlist_passes_through()
 {
     // Set a credential-shaped var in parent; default allowlist drops it.
-    ::setenv("MODMESH_BOT_TEST_API_KEY", "sk-test-secret", 1);
+    ::setenv("SOLVCON_BOT_TEST_API_KEY", "sk-test-secret", 1);
 
     RunResult r_default = run_subprocess({"/usr/bin/env"}, "", 65536, 5);
     EXPECT_EQ(r_default.exit_status, 0);
-    EXPECT(r_default.stdout_buf.find("MODMESH_BOT_TEST_API_KEY") == std::string::npos);
+    EXPECT(r_default.stdout_buf.find("SOLVCON_BOT_TEST_API_KEY") == std::string::npos);
 
     RunResult r_extra = run_subprocess(
         {"/usr/bin/env"}, "", 65536, 5,
-        {"MODMESH_BOT_TEST_API_KEY"});
+        {"SOLVCON_BOT_TEST_API_KEY"});
     EXPECT_EQ(r_extra.exit_status, 0);
-    EXPECT(r_extra.stdout_buf.find("MODMESH_BOT_TEST_API_KEY=sk-test-secret") != std::string::npos);
+    EXPECT(r_extra.stdout_buf.find("SOLVCON_BOT_TEST_API_KEY=sk-test-secret") != std::string::npos);
 
-    ::unsetenv("MODMESH_BOT_TEST_API_KEY");
+    ::unsetenv("SOLVCON_BOT_TEST_API_KEY");
 }
 
 void test_extra_env_allowlist_drops_unset_vars()
 {
     // Var is in the allowlist but not in the parent env — child should
     // not see a NAME= entry.
-    ::unsetenv("MODMESH_BOT_TEST_NOT_SET");
+    ::unsetenv("SOLVCON_BOT_TEST_NOT_SET");
     RunResult r = run_subprocess(
         {"/usr/bin/env"}, "", 65536, 5,
-        {"MODMESH_BOT_TEST_NOT_SET"});
+        {"SOLVCON_BOT_TEST_NOT_SET"});
     EXPECT_EQ(r.exit_status, 0);
-    EXPECT(r.stdout_buf.find("MODMESH_BOT_TEST_NOT_SET") == std::string::npos);
+    EXPECT(r.stdout_buf.find("SOLVCON_BOT_TEST_NOT_SET") == std::string::npos);
 }
 
 void test_extra_env_values_set_explicit_var()
 {
     // Var not in parent; explicit value is injected into child env.
-    ::unsetenv("MODMESH_BOT_TEST_EXPLICIT");
+    ::unsetenv("SOLVCON_BOT_TEST_EXPLICIT");
     RunResult r = run_subprocess(
         {"/usr/bin/env"}, "", 65536, 5,
         /*allowlist=*/{},
-        /*values=*/{{"MODMESH_BOT_TEST_EXPLICIT", "hello-world"}});
+        /*values=*/{{"SOLVCON_BOT_TEST_EXPLICIT", "hello-world"}});
     EXPECT_EQ(r.exit_status, 0);
-    EXPECT(r.stdout_buf.find("MODMESH_BOT_TEST_EXPLICIT=hello-world")
+    EXPECT(r.stdout_buf.find("SOLVCON_BOT_TEST_EXPLICIT=hello-world")
            != std::string::npos);
 }
 
@@ -204,18 +204,18 @@ void test_extra_env_values_override_passthrough()
 {
     // Parent has X=parent-value; allowlist would pass it through;
     // explicit values override with "override-value".
-    ::setenv("MODMESH_BOT_TEST_OVERRIDE", "parent-value", 1);
+    ::setenv("SOLVCON_BOT_TEST_OVERRIDE", "parent-value", 1);
     RunResult r = run_subprocess(
         {"/usr/bin/env"}, "", 65536, 5,
-        /*allowlist=*/{"MODMESH_BOT_TEST_OVERRIDE"},
-        /*values=*/{{"MODMESH_BOT_TEST_OVERRIDE", "override-value"}});
+        /*allowlist=*/{"SOLVCON_BOT_TEST_OVERRIDE"},
+        /*values=*/{{"SOLVCON_BOT_TEST_OVERRIDE", "override-value"}});
     EXPECT_EQ(r.exit_status, 0);
-    EXPECT(r.stdout_buf.find("MODMESH_BOT_TEST_OVERRIDE=override-value")
+    EXPECT(r.stdout_buf.find("SOLVCON_BOT_TEST_OVERRIDE=override-value")
            != std::string::npos);
     // Make sure the parent value is NOT present.
-    EXPECT(r.stdout_buf.find("MODMESH_BOT_TEST_OVERRIDE=parent-value")
+    EXPECT(r.stdout_buf.find("SOLVCON_BOT_TEST_OVERRIDE=parent-value")
            == std::string::npos);
-    ::unsetenv("MODMESH_BOT_TEST_OVERRIDE");
+    ::unsetenv("SOLVCON_BOT_TEST_OVERRIDE");
 }
 
 void test_extra_env_values_overrides_empty_passthrough()

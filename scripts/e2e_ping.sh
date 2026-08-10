@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# End-to-end ping-path smoke for modmesh-bot against a real GitHub repo.
+# End-to-end ping-path smoke for solvcon-bot against a real GitHub repo.
 # Posts a uniquely-nonced @<bot> mention as the gh-authed user, starts
 # the bot, polls for the bot's marker-tagged reply, and cleans up both
 # comments on exit.

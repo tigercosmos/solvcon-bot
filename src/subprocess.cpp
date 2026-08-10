@@ -20,7 +20,7 @@
 
 extern char ** environ;
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
 namespace
@@ -483,4 +483,4 @@ RunResult run_subprocess(
     return result;
 }
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

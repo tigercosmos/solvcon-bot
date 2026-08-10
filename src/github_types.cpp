@@ -1,15 +1,15 @@
 #include "github_types.hpp"
 
-#include <modmesh/serialization/SerializableItem.hpp>
+#include <solvcon/serialization/SerializableItem.hpp>
 
 #include <cctype>
 #include <sstream>
 #include <string>
 
-namespace modmesh_bot
+namespace solvcon_bot
 {
 
-namespace detail = modmesh::detail;
+namespace detail = solvcon::detail;
 
 std::string PrDetail::to_json() const
 {
@@ -72,4 +72,4 @@ int parse_issue_number_from_url(const std::string & issue_url)
     }
 }
 
-} // namespace modmesh_bot
+} // namespace solvcon_bot

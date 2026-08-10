@@ -1,4 +1,4 @@
-# modmesh-bot — developer workflow
+# solvcon-bot — developer workflow
 #
 # Local entry point. CI (.github/workflows/ci.yml) shells out to the
 # same targets, so what works here works in CI and vice versa.
@@ -43,7 +43,7 @@ default: build test
 # --- build + unit ----------------------------------------------------------
 
 build:
-	./scripts/apply_modmesh_patches.sh
+	./scripts/apply_solvcon_patches.sh
 	$(CMAKE) -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$${CMAKE_BUILD_TYPE:-Release}
 	$(CMAKE) --build $(BUILD_DIR) --parallel
 
@@ -86,7 +86,7 @@ all: default e2e
 # --- help ------------------------------------------------------------------
 
 help:
-	@printf 'modmesh-bot make targets:\n'
+	@printf 'solvcon-bot make targets:\n'
 	@printf '  %-18s %s\n' 'make'             'build + unit tests (default; no network)'
 	@printf '  %-18s %s\n' 'make build'       'configure + compile'
 	@printf '  %-18s %s\n' 'make test'        'run unit tests'

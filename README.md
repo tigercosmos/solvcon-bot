@@ -1,6 +1,6 @@
-# modmesh-bot
+# solvcon-bot
 
-![CI](https://github.com/tigercosmos/modmesh-bot/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/tigercosmos/solvcon-bot/actions/workflows/ci.yml/badge.svg)
 
 A lightweight C++23 daemon that watches one GitHub repository's pull
 requests and runs an AI code review when either:
@@ -33,17 +33,17 @@ Prerequisites:
   pinned release) plus the agent CLI itself (`claude`, `codex`, or
   `cursor-agent`) on PATH. `mock` needs neither.
 
-Submodules + local modmesh patches:
+Submodules:
 
 ```bash
 git submodule update --init --recursive
-./scripts/apply_modmesh_patches.sh   # applies patches/*.patch into third_party/modmesh
+./scripts/apply_solvcon_patches.sh   # applies patches/*.patch into third_party/solvcon
 ```
 
-`patches/modmesh-serializer-edge-cases.patch` carries two parser fixes
-that are not yet upstream in modmesh: empty arrays/objects and
-string-state tracking in value scans. The script is idempotent; see
-`issue.md` for the bug details and the upstream-PR plan.
+There are currently no local patches (the former serializer
+edge-case patch is upstream as of the `b7b934f5` submodule bump), so
+the script no-ops; it stays in the bootstrap path for any future
+workaround. See `issue.md` for history.
 
 Configure and build:
 
@@ -126,7 +126,7 @@ All configuration comes from environment variables. Required:
 | Var | Notes |
 |---|---|
 | `GITHUB_TOKEN` | Personal access token. Classic needs `repo` (or `public_repo`) plus `read:org` for org repos. Fine-grained needs `pull-requests: write`, `contents: read`, `metadata: read`, and `members: read` for org repos. |
-| `GITHUB_REPO` | `owner/name`, e.g. `solvcon/modmesh`. |
+| `GITHUB_REPO` | `owner/name`, e.g. `solvcon/solvcon`. |
 | `BOT_HANDLE` | The bot's GitHub username, without the `@`. |
 | `REVIEWER_KIND` | One of `mock`, `claude`, `codex`, `cursor` (default `mock`). Every AI kind runs its CLI through [codexmon](https://github.com/tigercosmos/codexmon) — see "Reviewer kinds" below. The bot prepends a built-in review prompt and pipes the diff to the agent's stdin. |
 | `REVIEWER_MODEL` | Optional. Passed as `--model NAME` to the agent CLI. Empty falls back to a per-kind default: **`claude-opus-4-8`** for `claude`, **`gpt-5.5`** for `codex`, codexmon's composer default for `cursor`. |
@@ -141,7 +141,7 @@ Optional:
 | Var | Default | Notes |
 |---|---|---|
 | `POLL_INTERVAL_SEC` | `30` | Polling cadence in seconds. |
-| `STATE_FILE` | `./modmesh-bot.state` | Persistence + lock-file base path (`.lock` and `.tmp` suffixes used during save). |
+| `STATE_FILE` | `./solvcon-bot.state` | Persistence + lock-file base path (`.lock` and `.tmp` suffixes used during save). |
 | `MAX_DIFF_BYTES` | `200000` | Abort diff download once accumulated bytes exceed this; the bot then posts a "diff too big" notice instead of running the reviewer. |
 | `MAX_OUTPUT_BYTES` | `60000` | Cap on the review body (read from codexmon's result file, or the mock's stdout); further bytes are dropped with a truncation note. codexmon's own status output has a separate fixed 1 MiB capture cap so a small body cap can't corrupt the status JSON. |
 | `SUBPROCESS_TIMEOUT_SEC` | `300` | Wall-clock limit on a review, passed to `codexmon run --wall-timeout`. codexmon kills the stuck agent and reports why; the bot only force-kills codexmon itself if it overruns by 60s. Also the hard timeout for the mock kind. |
@@ -153,7 +153,7 @@ Optional:
 | `REVIEWER_ENV_PASSTHROUGH` | empty | Comma-separated list of env-var names to pass through to the reviewer subprocess on top of the defaults (`PATH`/`HOME`/`LANG`/`TERM`/`USER`/`LOGNAME`). Use for AI credentials such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Not needed when the CLI authenticates via files in `$HOME` (codex's `~/.codex`, or claude after `claude /login` writes to the macOS keychain — keychain access already works with the default `USER` passthrough). |
 | `REVIEWER_STREAM_IO` | off | When truthy (`1`/`true`/`yes`/`on`), codexmon's live output (heartbeats + agent progress, on its stderr) is mirrored to the bot's stderr in real time, in addition to being captured. The bot daemon leaves this off so review noise doesn't bleed into systemd logs; `run-reviewer` turns it on so you can watch the agent work. |
 | `REVIEWER_HEARTBEAT_SEC` | `0` | Forwarded as `codexmon run --heartbeat N` (cadence of codexmon's stderr heartbeat lines). `0` = don't pass the flag; codexmon's own 10s default applies. |
-| `MODMESH_BOT_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. |
+| `SOLVCON_BOT_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. |
 
 ## Testing the reviewer directly
 
@@ -202,7 +202,7 @@ kind is one `AgentReviewer` (`src/reviewer_agent.cpp`) that runs the
 matching AI CLI through [codexmon](https://github.com/tigercosmos/codexmon):
 
 ```
-modmesh-bot ──spawn──► codexmon run --json --stdin --agent <kind> … -- <agent args>
+solvcon-bot ──spawn──► codexmon run --json --stdin --agent <kind> … -- <agent args>
                           │  injects the agent's stream flags, parses its events
                           │  heartbeats · idle/tool/wall watchdogs · result capture
                           └──spawn──► claude -p / codex exec / cursor-agent -p
@@ -248,17 +248,17 @@ to the agent.
 
 ```bash
 GITHUB_TOKEN=ghp_xxx \
-GITHUB_REPO=tigercosmos/modmesh \
-BOT_HANDLE=modmesh-bot \
+GITHUB_REPO=tigercosmos/solvcon \
+BOT_HANDLE=solvcon-bot \
 REVIEWER_KIND=claude REVIEWER_EFFORT=high \
-./build/modmesh-bot
+./build/solvcon-bot
 ```
 
 The daemon prints one structured log line per event:
 
 ```
-2026-05-29T01:06:48.798Z INFO main starting modmesh-bot 0.0.1 repo=… poll=30s
-2026-05-29T01:06:48.798Z INFO main state file locked: ./modmesh-bot.state
+2026-05-29T01:06:48.798Z INFO main starting solvcon-bot 0.0.1 repo=… poll=30s
+2026-05-29T01:06:48.798Z INFO main state file locked: ./solvcon-bot.state
 2026-05-29T01:06:50.011Z INFO watcher posted auto review for PR #42
 ```
 
@@ -278,7 +278,7 @@ exit 1 — those won't recover by polling harder.
 
 The bot acquires an exclusive `flock` on `${STATE_FILE}.lock` at
 startup. A second instance against the same state file exits
-immediately with `another modmesh-bot instance holds the state lock`.
+immediately with `another solvcon-bot instance holds the state lock`.
 
 State is persisted to `${STATE_FILE}` atomically (write `.tmp`,
 `fsync`, `rename`, `fsync` the parent directory). The lock is held on
@@ -302,7 +302,7 @@ a separate `.lock` file so that the rename does not orphan the lock.
 Every comment the bot posts is prefixed with a hidden HTML marker:
 
 ```
-<!-- modmesh-bot/<ver> source=auto|ping pr=<n> trigger=<comment_id|first-approval> -->
+<!-- solvcon-bot/<ver> source=auto|ping pr=<n> trigger=<comment_id|first-approval> -->
 ```
 
 Before posting, the bot lists the PR's existing comments and skips if
@@ -342,7 +342,7 @@ collaborator who isn't the PR author.
 
 1. **Bot account.** Make sure the bot user (e.g. `solvcon-bot`) is a
    **collaborator** on `$GITHUB_REPO`. For
-   `tigercosmos/modmesh`: *Settings → Collaborators → Add people*,
+   `tigercosmos/solvcon`: *Settings → Collaborators → Add people*,
    then accept the invite while signed in as the bot.
 
 2. **Bot PAT.** Sign in as the bot, generate a PAT:
@@ -403,7 +403,7 @@ The script:
 2. Confirms the bot is a collaborator and the PR is open.
 3. As you (via `gh api`), posts a uniquely-nonced
    `@<bot> please review` comment on the PR.
-4. Starts `./build/modmesh-bot` in the background with `BOT_PAT` as
+4. Starts `./build/solvcon-bot` in the background with `BOT_PAT` as
    `GITHUB_TOKEN`.
 5. Polls the PR's comments (via `gh api`) for a reply authored by
    the bot whose body contains the marker key
@@ -426,19 +426,19 @@ start the bot in one terminal, run
 set -a; source .env; set +a       # load TEST_PR_NUMBER + GITHUB_REPO
 gh pr review "$TEST_PR_NUMBER" --approve \
     --repo "$GITHUB_REPO" \
-    --body "automated approve for modmesh-bot e2e auto path"
+    --body "automated approve for solvcon-bot e2e auto path"
 ```
 
 in another (you must be signed in to gh as a non-author collaborator),
 and within one poll interval the bot's log should print
 `INFO watcher posted auto review for PR #<n>`. The PR should have a
 new comment from the bot containing
-`<!-- modmesh-bot/<ver> source=auto pr=<n> trigger=first-approval -->`.
+`<!-- solvcon-bot/<ver> source=auto pr=<n> trigger=first-approval -->`.
 
 ## Project layout
 
 ```
-modmesh-bot/
+solvcon-bot/
 ├── CMakeLists.txt
 ├── README.md
 ├── plan.md                       full design doc
@@ -468,10 +468,8 @@ modmesh-bot/
 ├── .env.example                  template for the .env at repo root (BOT_PAT, GITHUB_REPO, TEST_PR_NUMBER, …)
 ├── tools/
 │   └── run_reviewer.cpp          standalone IReviewer driver (build/run-reviewer)
-├── patches/
-│   └── modmesh-serializer-edge-cases.patch  modmesh JSON parser fixes (apply via scripts/apply_modmesh_patches.sh; see issue.md)
 ├── scripts/
-│   ├── apply_modmesh_patches.sh  bootstrap helper: applies patches/*.patch into third_party/modmesh (idempotent)
+│   ├── apply_solvcon_patches.sh  bootstrap helper: applies patches/*.patch into third_party/solvcon (idempotent)
 │   ├── install_codexmon.sh       download + checksum-verify + install the pinned codexmon release
 │   ├── e2e_lib.sh                shared helpers sourced by the e2e_*.sh scripts
 │   ├── e2e_ping.sh               ping path: posts an @-mention, waits for the bot's marker-tagged reply
@@ -484,5 +482,5 @@ modmesh-bot/
 │   └── e2e_auto.md               manual write-up of the auto-path setup
 └── third_party/
     ├── cpp-httplib/httplib.h     vendored, v0.18.5
-    └── modmesh/                  submodule, pinned SHA; see issue.md for the local patch
+    └── solvcon/                  submodule, pinned SHA; see issue.md for known upstream issues
 ```
