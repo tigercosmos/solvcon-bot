@@ -78,11 +78,35 @@ CodexmonStatus parse_codexmon_status(const std::string & json);
 // CLI.
 std::string default_review_prompt();
 
-// Assemble the full stdin buffer (prompt + BEGIN_DIFF + diff + END_DIFF)
-// that the AI reviewers ship to their child process. Lives in the
-// header purely for testability.
+// A fresh 32-lowercase-hex-char (128-bit) random token used to name the
+// diff fences for a single review run. Drawn from std::random_device —
+// never from the clock — because a PR author who can predict the nonce
+// can forge the closing fence and smuggle instructions past it.
+std::string generate_diff_fence_nonce();
+
+// Assemble the full stdin buffer that the AI reviewers ship to their
+// child process:
+//
+//   <prompt>
+//
+//   <one instruction line naming both fences>
+//   BEGIN_DIFF_<nonce>
+//   <diff>
+//   END_DIFF_<nonce>
+//
+// The nonce-suffixed fences are unforgeable from inside the diff, and
+// the instruction line carries the fence names to the model at runtime
+// so the scheme also works with an operator-supplied prompt (which
+// cannot know the nonce). Lives in the header purely for testability.
+//
+// The two-argument form draws a fresh nonce per call; the three-argument
+// form takes an explicit nonce so tests can be byte-exact. Callers must
+// not reuse a nonce across runs.
 std::string assemble_review_stdin(const std::string & prompt,
                                   const std::string & diff);
+std::string assemble_review_stdin(const std::string & prompt,
+                                  const std::string & diff,
+                                  const std::string & nonce);
 
 // Review bodies are capped at MAX_OUTPUT_BYTES. When that fires we
 // append a notice to the returned body so the posted comment doesn't

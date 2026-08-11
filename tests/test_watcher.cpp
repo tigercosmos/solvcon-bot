@@ -126,7 +126,16 @@ struct FakeWatcherIo : solvcon_bot::WatcherIo
     std::map<int, std::vector<IssueComment>> comments; // PR-scoped
     std::vector<IssueComment> issue_comments_stream;   // repo-wide stream
     std::map<int, solvcon_bot::PrDetail> details;
+    // is_collaborator scripting, checked in this order: a login in
+    // collab_fatal_throws raises a scope-style (fatal) GithubError, one in
+    // collab_transient_throws raises a plain transient failure, one in
+    // collab_rate_limited_throws raises a transient-flagged 403, and
+    // anything else answers membership from `collaborators`.
     std::set<std::string> collaborators;
+    std::set<std::string> collab_fatal_throws;
+    std::set<std::string> collab_transient_throws;
+    std::set<std::string> collab_rate_limited_throws;
+    std::vector<std::string> is_collaborator_calls;
     std::map<int, DiffResult> diffs;
     std::string reviewer_output = "## review\n\nlgtm\n";
 
@@ -219,8 +228,20 @@ struct FakeWatcherIo : solvcon_bot::WatcherIo
     }
     bool is_collaborator(const std::string & u) override
     {
+        is_collaborator_calls.push_back(u);
         if (throw_on_is_collaborator)
             throw std::runtime_error("simulated is_collaborator 403");
+        if (collab_fatal_throws.count(u) > 0)
+        {
+            throw solvcon_bot::GithubError(403, "simulated scope 403");
+        }
+        if (collab_rate_limited_throws.count(u) > 0)
+        {
+            throw solvcon_bot::GithubError(403, "simulated rate-limit 403",
+                                           /*transient=*/true);
+        }
+        if (collab_transient_throws.count(u) > 0)
+            throw std::runtime_error("simulated is_collaborator failure");
         return collaborators.count(u) > 0;
     }
     std::string run_reviewer(const std::string & diff) override
@@ -354,6 +375,7 @@ void test_auto_path_dispatch_on_first_approval()
     FakeWatcherIo io;
     io.prs = {make_pr(42)};
     io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
     Watcher w(make_cfg(), io);
     w.tick();
 
@@ -372,6 +394,7 @@ void test_auto_path_already_reviewed_pr_skipped()
     FakeWatcherIo io;
     io.prs = {make_pr(42)};
     io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
     io.already_reviewed.insert(42);
     Watcher w(make_cfg(), io);
     w.tick();
@@ -385,6 +408,7 @@ void test_auto_path_marker_dedupe_skips_post_but_marks_reviewed()
     FakeWatcherIo io;
     io.prs = {make_pr(42)};
     io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
     // Pre-existing bot comment with the marker. Even the OLD version
     // string should still match because dedupe uses the key.
     io.comments[42] = {
@@ -404,6 +428,7 @@ void test_auto_path_marker_dedupe_ignores_other_users_markers()
     FakeWatcherIo io;
     io.prs = {make_pr(42)};
     io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
     // Someone other than the bot posted a body that happens to contain a
     // marker-shaped string. We should still dispatch.
     io.comments[42] = {
@@ -422,6 +447,7 @@ void test_auto_path_truncated_diff_posts_notice_and_skips_reviewer()
     FakeWatcherIo io;
     io.prs = {make_pr(42)};
     io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
     io.diffs[42] = DiffResult{"partial", true};
     Watcher w(make_cfg(), io);
     w.tick();
@@ -436,6 +462,7 @@ void test_auto_path_dispatch_failure_does_not_mark_reviewed()
     FakeWatcherIo io;
     io.prs = {make_pr(42)};
     io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
     io.throw_on_reviewer = true;
     Watcher w(make_cfg(), io);
     w.tick();
@@ -449,6 +476,7 @@ void test_auto_path_list_reviews_failure_continues_to_next_pr()
     FakeWatcherIo io;
     io.prs = {make_pr(1), make_pr(2)};
     io.reviews[2] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
     io.throw_on_list_reviews_for_pr = true;
     io.throw_on_list_reviews_for_n = 1;
     Watcher w(make_cfg(), io);
@@ -468,11 +496,124 @@ void test_auto_path_takes_first_approval_only_one_review_posted()
         make_review("APPROVED", "alice"),
         make_review("APPROVED", "bob"),
     };
+    io.collaborators.insert("alice");
+    io.collaborators.insert("bob");
     Watcher w(make_cfg(), io);
     w.tick();
     EXPECT_EQ(io.posts.size(), static_cast<std::size_t>(1));
     EXPECT_EQ(io.reviewer_calls.size(), static_cast<std::size_t>(1));
     EXPECT(io.mark_reviewed_calls == std::vector<int>{42});
+}
+
+void test_auto_path_non_collaborator_approval_skipped()
+{
+    // On a public repo any account can approve. That must not spend an
+    // AI review run.
+    FakeWatcherIo io;
+    io.prs = {make_pr(42)};
+    io.reviews[42] = {make_review("APPROVED", "drive-by")};
+    // No collaborators configured.
+    Watcher w(make_cfg(), io);
+    w.tick();
+
+    EXPECT(io.posts.empty());
+    EXPECT(io.reviewer_calls.empty());
+    // Crucially NOT marked reviewed: a later real approval must still fire.
+    EXPECT(io.mark_reviewed_calls.empty());
+    EXPECT(io.is_collaborator_calls == std::vector<std::string>{"drive-by"});
+}
+
+void test_auto_path_non_collaborator_then_collaborator_dispatches()
+{
+    FakeWatcherIo io;
+    io.prs = {make_pr(42)};
+    io.reviews[42] = {
+        make_review("APPROVED", "drive-by"),
+        make_review("APPROVED", "alice"),
+    };
+    io.collaborators.insert("alice");
+    Watcher w(make_cfg(), io);
+    w.tick();
+
+    // The non-collaborator approval is skipped, scanning continues, and
+    // alice's approval dispatches exactly one review.
+    EXPECT_EQ(io.posts.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(io.posts[0].n, 42);
+    EXPECT_EQ(io.reviewer_calls.size(), static_cast<std::size_t>(1));
+    EXPECT(io.mark_reviewed_calls == std::vector<int>{42});
+}
+
+void test_auto_path_non_collaborator_retried_on_later_tick()
+{
+    // Tick 1 sees only a non-collaborator approval; tick 2 sees the
+    // collaborator's. Because tick 1 did not mark_reviewed, tick 2 fires.
+    FakeWatcherIo io;
+    io.prs = {make_pr(42)};
+    io.reviews[42] = {make_review("APPROVED", "drive-by")};
+    // Named Config: Watcher holds it by reference and this test outlives
+    // the full-expression a make_cfg() temporary would be bound to.
+    const Config cfg = make_cfg();
+    Watcher w(cfg, io);
+    w.tick();
+    EXPECT(io.posts.empty());
+
+    io.reviews[42].push_back(make_review("APPROVED", "alice"));
+    io.collaborators.insert("alice");
+    w.tick();
+    EXPECT_EQ(io.posts.size(), static_cast<std::size_t>(1));
+    EXPECT(io.mark_reviewed_calls == std::vector<int>{42});
+}
+
+void test_auto_path_is_collaborator_transient_failure_skips_pr()
+{
+    FakeWatcherIo io;
+    io.prs = {make_pr(1), make_pr(2)};
+    io.reviews[1] = {make_review("APPROVED", "flaky")};
+    io.reviews[2] = {make_review("APPROVED", "alice")};
+    io.collab_transient_throws.insert("flaky");
+    io.collaborators.insert("alice");
+
+    Watcher w(make_cfg(), io);
+    w.tick();
+
+    // PR 1 skipped without a durable decision; PR 2 still processed.
+    EXPECT(io.mark_reviewed_calls == std::vector<int>{2});
+    EXPECT_EQ(io.posts.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(io.posts[0].n, 2);
+}
+
+void test_auto_path_is_collaborator_rate_limited_403_is_not_fatal()
+{
+    // A transient-flagged 403 (rate limit) must behave like any other
+    // transient failure rather than killing the process.
+    FakeWatcherIo io;
+    io.prs = {make_pr(42)};
+    io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collab_rate_limited_throws.insert("alice");
+
+    Watcher w(make_cfg(), io);
+    bool threw = false;
+    try { w.tick(); }
+    catch (const std::exception &) { threw = true; }
+    EXPECT(!threw);
+    EXPECT(io.posts.empty());
+    EXPECT(io.mark_reviewed_calls.empty());
+}
+
+void test_auto_path_is_collaborator_scope_403_is_fatal()
+{
+    FakeWatcherIo io;
+    io.prs = {make_pr(42)};
+    io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collab_fatal_throws.insert("alice");
+
+    Watcher w(make_cfg(), io);
+    bool threw = false;
+    try { w.tick(); }
+    catch (const solvcon_bot::GithubError &) { threw = true; }
+    EXPECT(threw);
+    EXPECT(io.posts.empty());
+    EXPECT(io.mark_reviewed_calls.empty());
 }
 
 // --- run_ping_path tests --------------------------------------------------
@@ -583,7 +724,10 @@ void test_ping_path_self_mention_ignored()
 
     EXPECT(io.posts.empty());
     EXPECT(io.reviewer_calls.empty());
-    EXPECT(io.mark_handled_calls == std::vector<std::int64_t>{1001});
+    // Our own comment never reaches the mention check, so it stays out of
+    // the handled set; the cursor alone covers it.
+    EXPECT(io.mark_handled_calls.empty());
+    EXPECT_EQ(io.advance_cursor_calls.size(), static_cast<std::size_t>(1));
 }
 
 void test_ping_path_no_mention_ignored()
@@ -601,6 +745,39 @@ void test_ping_path_no_mention_ignored()
 
     EXPECT(io.posts.empty());
     EXPECT(io.reviewer_calls.empty());
+    // Non-mention comments must NOT be recorded — that is what made the
+    // state file grow without bound. The cursor still advances past them.
+    EXPECT(io.mark_handled_calls.empty());
+    EXPECT_EQ(io.advance_cursor_calls.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(io.advance_cursor_calls[0].second, static_cast<std::int64_t>(1001));
+}
+
+void test_ping_path_edited_comment_adding_mention_triggers()
+{
+    // A comment with no mention is only cursor-protected. When it is
+    // edited to add one, GitHub re-surfaces it with a newer updated_at
+    // and the bot now responds — the intended consequence of not
+    // recording every comment id.
+    FakeWatcherIo io;
+    io.details[42] = make_pr_detail(42, "open", true);
+    io.collaborators.insert("alice");
+    io.issue_comments_stream = {
+        make_issue_comment(1001, "alice", "Just a regular comment",
+                           "2026-05-01T10:00:00Z", 42)
+    };
+    // Named Config: Watcher holds it by reference and this test outlives
+    // the full-expression a make_cfg() temporary would be bound to.
+    const Config cfg = make_cfg();
+    Watcher w(cfg, io);
+    w.tick();
+    EXPECT(io.posts.empty());
+
+    io.issue_comments_stream = {
+        make_issue_comment(1001, "alice", "@solvcon-bot please review",
+                           "2026-05-01T10:05:00Z", 42)
+    };
+    w.tick();
+    EXPECT_EQ(io.posts.size(), static_cast<std::size_t>(1));
     EXPECT(io.mark_handled_calls == std::vector<std::int64_t>{1001});
 }
 
@@ -619,8 +796,10 @@ void test_ping_path_already_handled_skipped()
     w.tick();
     EXPECT(io.posts.empty());
     EXPECT(io.reviewer_calls.empty());
-    // mark_handled is still called (idempotent), cursor still advances.
-    EXPECT(io.mark_handled_calls == std::vector<std::int64_t>{1001});
+    // Already in the handled set, so no redundant re-marking; the cursor
+    // still advances past it.
+    EXPECT(io.mark_handled_calls.empty());
+    EXPECT_EQ(io.advance_cursor_calls.size(), static_cast<std::size_t>(1));
 }
 
 void test_ping_path_at_cursor_skipped()
@@ -777,7 +956,9 @@ void test_ping_path_two_comments_advances_cursor_to_last()
     w.tick();
 
     EXPECT_EQ(io.posts.size(), static_cast<std::size_t>(1)); // alice's only
-    EXPECT(io.mark_handled_calls == (std::vector<std::int64_t>{1001, 1002}));
+    // Only the mention is recorded; bob's plain comment moves the cursor.
+    EXPECT(io.mark_handled_calls == std::vector<std::int64_t>{1001});
+    EXPECT_EQ(io.advance_cursor_calls.size(), static_cast<std::size_t>(2));
     EXPECT_EQ(io.advance_cursor_calls.back().first,
               std::string("2026-05-01T10:00:05Z"));
     EXPECT_EQ(io.advance_cursor_calls.back().second,
@@ -806,6 +987,12 @@ int main()
     test_auto_path_dispatch_failure_does_not_mark_reviewed();
     test_auto_path_list_reviews_failure_continues_to_next_pr();
     test_auto_path_takes_first_approval_only_one_review_posted();
+    test_auto_path_non_collaborator_approval_skipped();
+    test_auto_path_non_collaborator_then_collaborator_dispatches();
+    test_auto_path_non_collaborator_retried_on_later_tick();
+    test_auto_path_is_collaborator_transient_failure_skips_pr();
+    test_auto_path_is_collaborator_rate_limited_403_is_not_fatal();
+    test_auto_path_is_collaborator_scope_403_is_fatal();
 
     test_ping_path_no_comments();
     test_ping_path_collaborator_with_mention_dispatches();
@@ -814,6 +1001,7 @@ int main()
     test_ping_path_closed_pr_ignored();
     test_ping_path_self_mention_ignored();
     test_ping_path_no_mention_ignored();
+    test_ping_path_edited_comment_adding_mention_triggers();
     test_ping_path_already_handled_skipped();
     test_ping_path_at_cursor_skipped();
     test_ping_path_marker_dedupe_skips_post();

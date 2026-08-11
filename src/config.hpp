@@ -44,8 +44,17 @@ struct Config
 
     std::size_t max_diff_bytes = 200000;
     std::size_t max_output_bytes = 60000;
+
+    // Reviewer wall-clock limit. Env SUBPROCESS_TIMEOUT_SEC, accepted
+    // range 1..86400 (1 day). The upper bound is deliberate:
+    // src/reviewer_agent.cpp adds a grace period to this value in
+    // plain `int`, which would be signed overflow (UB) for values
+    // near INT_MAX.
     int subprocess_timeout_sec = 300;
 
+    // Per-request HTTP timeouts. Env HTTP_{CONNECT,READ,WRITE}_TIMEOUT_SEC,
+    // accepted range 1..3600 (1 hour) — a REST call still stuck after
+    // an hour is wedged, so a larger value only delays the failure.
     int http_connect_timeout_sec = 10;
     int http_read_timeout_sec = 30;
     int http_write_timeout_sec = 30;

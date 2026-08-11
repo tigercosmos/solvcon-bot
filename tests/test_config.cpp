@@ -500,6 +500,120 @@ void test_poll_interval_too_large_rejected()
     EXPECT(throws_with_substring([] { (void)Config::from_env(); }, "POLL_INTERVAL_SEC"));
 }
 
+// --- timeout upper bounds -----------------------------------------------
+//
+// SUBPROCESS_TIMEOUT_SEC is capped at 86400 because reviewer_agent.cpp
+// computes `subprocess_timeout_sec + grace` as int; an INT_MAX-ish
+// value would overflow (UB). The HTTP timeouts are capped at 3600 for
+// plain sanity. Both keep a minimum of 1.
+
+void test_subprocess_timeout_accepts_max()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("SUBPROCESS_TIMEOUT_SEC", "86400", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.subprocess_timeout_sec, 86400);
+}
+
+void test_subprocess_timeout_above_max_rejected()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("SUBPROCESS_TIMEOUT_SEC", "86401", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
+                                  "SUBPROCESS_TIMEOUT_SEC"));
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
+                                  "out of allowed range"));
+}
+
+void test_subprocess_timeout_int_max_rejected()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("SUBPROCESS_TIMEOUT_SEC", "2147483647", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
+                                  "SUBPROCESS_TIMEOUT_SEC"));
+}
+
+void test_subprocess_timeout_zero_rejected()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("SUBPROCESS_TIMEOUT_SEC", "0", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
+                                  "SUBPROCESS_TIMEOUT_SEC"));
+}
+
+void test_subprocess_timeout_capped_in_apply_reviewer_env_too()
+{
+    // run-reviewer never calls Config::from_env(); it goes straight to
+    // apply_reviewer_env, which reads SUBPROCESS_TIMEOUT_SEC as well.
+    // The cap has to hold on that path too.
+    clear_env();
+    ::setenv("SUBPROCESS_TIMEOUT_SEC", "86401", 1);
+    EXPECT(throws_with_substring([]
+                                 {
+                                     Config c;
+                                     apply_reviewer_env(c);
+                                 },
+                                 "SUBPROCESS_TIMEOUT_SEC"));
+
+    ::setenv("SUBPROCESS_TIMEOUT_SEC", "86400", 1);
+    Config c;
+    apply_reviewer_env(c);
+    EXPECT_EQ(c.subprocess_timeout_sec, 86400);
+}
+
+void test_http_timeouts_accept_max()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("HTTP_CONNECT_TIMEOUT_SEC", "3600", 1);
+    ::setenv("HTTP_READ_TIMEOUT_SEC", "3600", 1);
+    ::setenv("HTTP_WRITE_TIMEOUT_SEC", "3600", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.http_connect_timeout_sec, 3600);
+    EXPECT_EQ(c.http_read_timeout_sec, 3600);
+    EXPECT_EQ(c.http_write_timeout_sec, 3600);
+}
+
+void test_http_connect_timeout_above_max_rejected()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("HTTP_CONNECT_TIMEOUT_SEC", "3601", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
+                                  "HTTP_CONNECT_TIMEOUT_SEC"));
+}
+
+void test_http_read_timeout_int_max_rejected()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("HTTP_READ_TIMEOUT_SEC", "2147483647", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
+                                  "HTTP_READ_TIMEOUT_SEC"));
+}
+
+void test_http_write_timeout_above_max_rejected()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("HTTP_WRITE_TIMEOUT_SEC", "3601", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
+                                  "HTTP_WRITE_TIMEOUT_SEC"));
+}
+
+void test_http_timeout_zero_rejected()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("HTTP_READ_TIMEOUT_SEC", "0", 1);
+    EXPECT(throws_with_substring([] { (void)Config::from_env(); },
+                                  "HTTP_READ_TIMEOUT_SEC"));
+}
+
 // --- REVIEWER_ENV_PASSTHROUGH parsing -----------------------------------
 
 void test_reviewer_env_passthrough_default_empty()
@@ -593,6 +707,17 @@ int main()
     test_max_diff_bytes_negative_rejected();
     test_max_diff_bytes_zero_rejected();
     test_poll_interval_too_large_rejected();
+
+    test_subprocess_timeout_accepts_max();
+    test_subprocess_timeout_above_max_rejected();
+    test_subprocess_timeout_int_max_rejected();
+    test_subprocess_timeout_zero_rejected();
+    test_subprocess_timeout_capped_in_apply_reviewer_env_too();
+    test_http_timeouts_accept_max();
+    test_http_connect_timeout_above_max_rejected();
+    test_http_read_timeout_int_max_rejected();
+    test_http_write_timeout_above_max_rejected();
+    test_http_timeout_zero_rejected();
 
     test_reviewer_env_passthrough_default_empty();
     test_reviewer_env_passthrough_csv();

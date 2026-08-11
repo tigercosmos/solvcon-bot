@@ -160,6 +160,49 @@ void test_is_at_or_before_cursor()
     EXPECT(!s.is_at_or_before_cursor("2026-04-01T00:00:00Z", 501));
 }
 
+// --- first-run cursor seeding --------------------------------------------
+
+void test_init_cursor_if_empty_seeds_on_first_run()
+{
+    const std::string path = fresh_state_path("initcursor");
+    StateStore s(path);
+    EXPECT_EQ(s.cursor_updated_at(), std::string());
+
+    EXPECT(s.init_cursor_if_empty("2026-08-11T12:00:00Z"));
+    EXPECT_EQ(s.cursor_updated_at(), std::string("2026-08-11T12:00:00Z"));
+    // id 0 so a comment landing in the same second is still considered.
+    EXPECT_EQ(s.cursor_id(), static_cast<std::int64_t>(0));
+    EXPECT(!s.is_at_or_before_cursor("2026-08-11T12:00:00Z", 1));
+    EXPECT(s.is_at_or_before_cursor("2026-08-11T11:59:59Z", 999));
+}
+
+void test_init_cursor_if_empty_is_noop_when_cursor_set()
+{
+    const std::string path = fresh_state_path("initcursor_noop");
+    StateStore s(path);
+    s.advance_cursor("2026-04-01T00:00:00Z", 500);
+
+    EXPECT(!s.init_cursor_if_empty("2026-08-11T12:00:00Z"));
+    EXPECT_EQ(s.cursor_updated_at(), std::string("2026-04-01T00:00:00Z"));
+    EXPECT_EQ(s.cursor_id(), static_cast<std::int64_t>(500));
+}
+
+void test_init_cursor_if_empty_noop_after_reload()
+{
+    // A cursor persisted by a previous run must survive restart untouched.
+    const std::string path = fresh_state_path("initcursor_reload");
+    {
+        StateStore s(path);
+        EXPECT(s.init_cursor_if_empty("2026-08-11T12:00:00Z"));
+        s.save();
+    }
+    {
+        StateStore s(path);
+        EXPECT(!s.init_cursor_if_empty("2026-09-01T00:00:00Z"));
+        EXPECT_EQ(s.cursor_updated_at(), std::string("2026-08-11T12:00:00Z"));
+    }
+}
+
 // --- second-instance flock -----------------------------------------------
 
 // Run a child process that tries to construct a StateStore on `path` and
@@ -286,6 +329,9 @@ int main()
     test_reopen_without_save_drops_in_memory_changes();
     test_cursor_advance_monotonic();
     test_is_at_or_before_cursor();
+    test_init_cursor_if_empty_seeds_on_first_run();
+    test_init_cursor_if_empty_is_noop_when_cursor_set();
+    test_init_cursor_if_empty_noop_after_reload();
     test_second_instance_in_child_process_blocked();
     test_lock_released_lets_child_acquire();
     test_lock_survives_save();

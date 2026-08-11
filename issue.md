@@ -161,31 +161,35 @@ the JSON-mandatory `"` and `\\`).
 
 ---
 
-## 4. BEGIN_DIFF / END_DIFF fences are forgeable from a PR diff
+## 4. ~~BEGIN_DIFF / END_DIFF fences are forgeable from a PR diff~~ (fixed)
 
 **Where:** `src/reviewer.cpp` — `assemble_review_stdin`.
 
-The AI reviewers receive their input as
-`PROMPT\n\nBEGIN_DIFF\n<diff>\nEND_DIFF\n`. A malicious PR author can
-put a line that reads exactly `END_DIFF` in their diff, followed by
-adversarial instructions — the AI may then read those instructions
-as if they came from the operator. Diff content currently flows
-trusted-author-bounded (only collaborators trigger the ping path,
-the auto path requires an APPROVED review), so today's deployment
-isn't immediately exposed, but the marker is forgeable in principle.
+The AI reviewers used to receive their input as
+`PROMPT\n\nBEGIN_DIFF\n<diff>\nEND_DIFF\n`. A malicious PR author
+could put a line that reads exactly `END_DIFF` in their diff,
+followed by adversarial instructions — the AI may then read those
+instructions as if they came from the operator.
 
-**Resolution plan.** Generate a per-run random nonce, e.g.
-`BEGIN_DIFF_<32 hex chars>`, and embed it in both fences. Reject /
-encode lines that match `^(BEGIN|END)_DIFF` before interpolation as
-a belt-and-braces second layer.
+**Resolution.** `assemble_review_stdin` now generates a 128-bit
+random nonce per run (`generate_diff_fence_nonce()`, backed by
+`std::random_device`) and emits `BEGIN_DIFF_<32 hex>` /
+`END_DIFF_<32 hex>` fences, plus an instruction line naming the
+exact fences and telling the model everything between them is
+untrusted data. A literal `END_DIFF` line inside a diff can no
+longer close the fenced region (covered by tests in
+`tests/test_reviewer.cpp`). The planned second layer (rejecting /
+encoding `^(BEGIN|END)_DIFF` lines before interpolation) was
+dropped: rewriting diff lines would corrupt patch context, and the
+nonce alone makes the fence unforgeable without knowing it.
 
-## 5. M3 transport tests not yet present
+## 5. ~~M3 transport tests not yet present~~ (fixed)
 
-**Where:** `tests/test_github_client.cpp`
+**Where:** `tests/test_github_transport.cpp`
 
 GithubClient's HTTP behaviors — pagination via `Link: rel="next"`,
-collaborator 404 vs 403 dispatch, 5xx/429 retry policy, POST
-non-retry, diff truncation under MAX_DIFF_BYTES — are exercised only
-in M7/M8 end-to-end smoke. A local in-process fake `httplib::Server`
-test would catch regressions earlier. Track as M3 follow-up; not a
-correctness defect today.
+collaborator 404 vs 403 dispatch, 5xx/429 retry policy (including
+transient rate-limited 403s), POST non-retry, diff truncation under
+MAX_DIFF_BYTES, and the ETag conditional cache — are now covered by
+an in-process fake `httplib::Server` suite in
+`tests/test_github_transport.cpp`.

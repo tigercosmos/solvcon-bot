@@ -4,7 +4,13 @@
 
 #include "subprocess.hpp"
 
+#include <signal.h>
+#include <sys/time.h>
+#include <sys/wait.h>
+
+#include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -96,6 +102,115 @@ void test_timeout_kills_long_sleep()
     EXPECT(r.exit_status == -1);
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
     EXPECT(ms < 3000); // killed promptly (timeout + grace ≪ 10s sleep)
+}
+
+// True when this process has no unreaped children left. run_subprocess
+// must always leave the tree in this state: a stranded zombie (or a
+// child it never waited for) shows up here as a pid > 0.
+bool no_unreaped_children()
+{
+    int st = 0;
+    pid_t p = ::waitpid(-1, &st, WNOHANG);
+    return p < 0 && errno == ECHILD;
+}
+
+void test_timeout_reaps_child_that_ignores_sigterm()
+{
+    // The shell traps (ignores) SIGTERM, so the timeout path's SIGTERM
+    // does nothing and only the follow-up SIGKILL can end it. Exercises
+    // kill-then-reap end to end: we must come back promptly, report
+    // timed_out, and leave no unreaped child behind.
+    auto t0 = std::chrono::steady_clock::now();
+    RunResult r = run_subprocess(
+        {"/bin/sh", "-c", "trap '' TERM; while :; do sleep 0.2; done"},
+        "", 4096, 1);
+    auto elapsed = std::chrono::steady_clock::now() - t0;
+    EXPECT(r.timed_out);
+    EXPECT_EQ(r.exit_status, -1); // killed by signal
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+    EXPECT(ms < 3000); // 1s timeout + 200ms grace, not a hang
+    EXPECT(no_unreaped_children());
+}
+
+volatile std::sig_atomic_t g_alarm_count = 0;
+
+// Plain assignment, not ++: compound ops on volatile are deprecated in
+// C++20 and this build is -Werror.
+extern "C" void count_alarm(int) { g_alarm_count = g_alarm_count + 1; }
+
+void test_waitpid_survives_eintr()
+{
+    // Regression: run_subprocess used to call waitpid() exactly once. Our
+    // real signal handlers (main.cpp) are installed WITHOUT SA_RESTART,
+    // so a signal arriving while waitpid blocks returns EINTR and the old
+    // code reported exit_status=-1 while leaving the child running and
+    // unreaped. Reproduce that deterministically: install an SA_RESTART-
+    // less SIGALRM handler, arm a repeating 100ms timer, and run a child
+    // that closes both output pipes immediately and only THEN lives for a
+    // second. The poll loop therefore finishes early and the parent spends
+    // ~1s parked in waitpid, where every timer tick interrupts it.
+    struct sigaction sa{};
+    sa.sa_handler = count_alarm;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0; // deliberately NOT SA_RESTART
+    struct sigaction old_sa{};
+    EXPECT_EQ(::sigaction(SIGALRM, &sa, &old_sa), 0);
+
+    struct itimerval timer{};
+    timer.it_value.tv_usec = 100 * 1000;
+    timer.it_interval.tv_usec = 100 * 1000;
+    struct itimerval old_timer{};
+    EXPECT_EQ(::setitimer(ITIMER_REAL, &timer, &old_timer), 0);
+
+    g_alarm_count = 0;
+    RunResult r = run_subprocess(
+        {"/bin/sh", "-c", "exec 1>/dev/null 2>/dev/null; sleep 1"},
+        "", 4096, 30);
+
+    // Disarm before asserting so a failing EXPECT is not itself
+    // interrupted by the timer.
+    ::setitimer(ITIMER_REAL, &old_timer, nullptr);
+    ::sigaction(SIGALRM, &old_sa, nullptr);
+
+    EXPECT(g_alarm_count > 0); // the test actually delivered signals
+    EXPECT_EQ(r.exit_status, 0);
+    EXPECT(!r.timed_out);
+    EXPECT(no_unreaped_children());
+}
+
+void test_stdin_write_survives_eintr()
+{
+    // Same signal storm, but with a large stdin payload so the parent is
+    // repeatedly in the write()/poll() half of the loop. A mishandled
+    // EINTR on the stdin write would silently truncate what cat echoes
+    // back; the round trip must stay byte-exact.
+    struct sigaction sa{};
+    sa.sa_handler = count_alarm;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0; // deliberately NOT SA_RESTART
+    struct sigaction old_sa{};
+    EXPECT_EQ(::sigaction(SIGALRM, &sa, &old_sa), 0);
+
+    // 1ms ticks: the payload below takes far longer than that to shuttle
+    // through a 64KB pipe, so many ticks land inside the loop.
+    struct itimerval timer{};
+    timer.it_value.tv_usec = 1000;
+    timer.it_interval.tv_usec = 1000;
+    struct itimerval old_timer{};
+    EXPECT_EQ(::setitimer(ITIMER_REAL, &timer, &old_timer), 0);
+
+    g_alarm_count = 0;
+    const std::string input(4 * 1024 * 1024, 'z');
+    RunResult r = run_subprocess({"/bin/cat"}, input, 16 * 1024 * 1024, 30);
+
+    ::setitimer(ITIMER_REAL, &old_timer, nullptr);
+    ::sigaction(SIGALRM, &old_sa, nullptr);
+
+    EXPECT(g_alarm_count > 0);
+    EXPECT_EQ(r.exit_status, 0);
+    EXPECT(!r.stdout_truncated);
+    EXPECT_EQ(r.stdout_buf.size(), input.size());
+    EXPECT(no_unreaped_children());
 }
 
 void test_spawn_failure_for_missing_binary()
@@ -267,6 +382,9 @@ int main()
     test_stdout_truncation();
     test_nonzero_exit();
     test_timeout_kills_long_sleep();
+    test_timeout_reaps_child_that_ignores_sigterm();
+    test_waitpid_survives_eintr();
+    test_stdin_write_survives_eintr();
     test_spawn_failure_for_missing_binary();
     test_stderr_captured_separately();
     test_sanitized_env_no_github_token();

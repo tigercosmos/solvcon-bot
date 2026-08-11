@@ -8,8 +8,10 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -181,6 +183,21 @@ struct GithubClient::Impl
     };
     std::unordered_map<std::string, CacheEntry> conditional_cache;
 
+    // Collaborator lookups are memoized with a TTL. The auto path
+    // re-inspects every APPROVED review on every tick (the reviews
+    // list is ETag-cached, this lookup is not), so without a cache a
+    // single non-collaborator approval on a public repo would cost one
+    // authenticated request per tick forever — enough parked
+    // approvals could drain the whole API quota. Both outcomes are
+    // cached; a freshly added collaborator is picked up after the TTL.
+    struct CollabEntry
+    {
+        bool is_collab;
+        std::chrono::steady_clock::time_point expires;
+    };
+    static constexpr std::chrono::minutes kCollabCacheTtl{15};
+    std::unordered_map<std::string, CollabEntry> collab_cache;
+
     explicit Impl(const Config & c)
         : cfg(c), cli(c.github_api_base_url.c_str())
     {
@@ -217,6 +234,18 @@ struct GithubClient::Impl
             if (eq) return v;
         }
         return "";
+    }
+
+    // GitHub returns 403 both for "your token lacks the scope" (fatal —
+    // retrying never helps) and for primary/secondary rate limiting
+    // (transient). Only the rate-limited variant carries Retry-After or
+    // X-RateLimit-Remaining: 0, so that is what we key on. Non-403
+    // statuses are never rate-limit 403s, hence the early false.
+    static bool is_rate_limited_403(const httplib::Result & res)
+    {
+        if (res->status != 403) return false;
+        return !header(res, "Retry-After").empty()
+            || header(res, "X-RateLimit-Remaining") == "0";
     }
 
     // For api.github.com Link headers we want the path+query only.
@@ -300,14 +329,9 @@ struct GithubClient::Impl
             const int status = res->status;
             if (status >= 200 && status < 300) return res;
 
-            // GitHub returns 403 both for "you lack the scope" (fatal) and
-            // for rate-limit / secondary-rate-limit (transient). The
-            // transient form is identified by either Retry-After being
-            // set or X-RateLimit-Remaining being "0". Treat that variant
-            // like 429; let the truly-fatal 403 fall through.
-            const bool rate_limited_403 = (status == 403)
-                && (!header(res, "Retry-After").empty()
-                    || header(res, "X-RateLimit-Remaining") == "0");
+            // Treat a rate-limited 403 like 429; let the truly-fatal
+            // (scope-problem) 403 fall through to the caller.
+            const bool rate_limited_403 = is_rate_limited_403(res);
 
             // Retryable: 429 + 5xx + rate-limit 403, GETs only.
             if (is_get && (status == 429 || rate_limited_403
@@ -315,12 +339,29 @@ struct GithubClient::Impl
             {
                 if (attempt >= max_attempts)
                 {
+                    // The transient flag matters only for 403: callers
+                    // exit the process on a non-transient 403, and a
+                    // rate limit must not be allowed to do that.
                     throw GithubError(status,
-                        std::string("HTTP ") + std::to_string(status) + " after retries");
+                        std::string("HTTP ") + std::to_string(status) + " after retries",
+                        /*transient=*/rate_limited_403);
                 }
                 const std::string ra = header(res, "Retry-After");
                 sleep_backoff(attempt, ra);
                 continue;
+            }
+
+            // A rate-limited 403 on a write is just as transient, but
+            // writes are never retried here (the request may have
+            // landed; a retry risks duplicates). Throw with the
+            // transient flag set so callers can't misread it as the
+            // fatal scope-403 and exit the process — marker dedupe
+            // retries the write on a later tick.
+            if (!is_get && rate_limited_403)
+            {
+                throw GithubError(status,
+                    "HTTP 403 (rate limited) on write: " + path,
+                    /*transient=*/true);
             }
 
             // Non-retryable: surface to caller. They can choose to handle
@@ -564,9 +605,23 @@ bool GithubClient::is_collaborator(const std::string & user)
     {
         throw GithubError(0, "rejected collaborator user (invalid chars): " + user);
     }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (auto it = impl_->collab_cache.find(seg);
+        it != impl_->collab_cache.end() && now < it->second.expires)
+    {
+        return it->second.is_collab;
+    }
+
     auto res = impl_->get(impl_->repo_path + "/collaborators/" + seg);
-    if (res->status == 204) return true;
-    if (res->status == 404) return false;
+    // Only definitive answers are cached; the scope-403 below throws
+    // without caching so a fixed token is honored immediately.
+    if (res->status == 204 || res->status == 404)
+    {
+        impl_->collab_cache[seg] = {res->status == 204,
+                                    now + Impl::kCollabCacheTtl};
+        return res->status == 204;
+    }
     // 403 here is a token-scope problem (need read:org / members:read for
     // org repos), not a "not a collaborator" answer. Surface it.
     throw GithubError(res->status,
@@ -636,13 +691,20 @@ DiffResult GithubClient::stream_diff(int pr_number)
             continue;
         }
         if (res->status >= 200 && res->status < 300) return out;
-        if (res->status == 429 || (res->status >= 500 && res->status < 600))
+
+        // A rate-limited 403 is retryable here exactly as it is in
+        // Impl::request(); without this it would fall through to the
+        // "diff fetch failed" throw below and read as a fatal 403.
+        const bool rate_limited_403 = Impl::is_rate_limited_403(res);
+        if (res->status == 429 || rate_limited_403
+            || (res->status >= 500 && res->status < 600))
         {
             if (attempt >= 6)
             {
                 throw GithubError(res->status,
                     "diff fetch retry exhausted: HTTP "
-                        + std::to_string(res->status));
+                        + std::to_string(res->status),
+                    /*transient=*/rate_limited_403);
             }
             Impl::sleep_backoff(attempt, Impl::header(res, "Retry-After"));
             continue;

@@ -24,11 +24,19 @@ namespace solvcon_bot
 class GithubError : public std::runtime_error
 {
 public:
-    GithubError(int status, std::string message)
-        : std::runtime_error(std::move(message)), status_(status) {}
+    // `transient` marks a failure that is expected to clear on its own —
+    // in practice a rate-limited 403. Callers treat 403 as fatal (token
+    // scope problem) unless this flag says otherwise, so it must only be
+    // set when the response actually carried rate-limit markers.
+    GithubError(int status, std::string message, bool transient = false)
+        : std::runtime_error(std::move(message))
+        , status_(status)
+        , transient_(transient) {}
     int status() const { return status_; }
+    bool transient() const { return transient_; }
 private:
     int status_;
+    bool transient_;
 };
 
 struct DiffResult

@@ -96,7 +96,9 @@ private:
     void dispatch_review(int pr_number, const std::string & source,
                          std::optional<long long> trigger_comment_id);
 
-    const Config & cfg_;
+    // Stored by value: a reference member would dangle when callers
+    // construct with a temporary Config (tests do exactly that).
+    const Config cfg_;
     WatcherIo & io_;
 };
 

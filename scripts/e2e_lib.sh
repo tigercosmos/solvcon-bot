@@ -158,7 +158,12 @@ e2e_setup() {
         exit 1
     fi
 
-    BOT_LOG="${BOT_LOG:-/tmp/solvcon-bot-e2e.log}"
+    # Default the bot log to a per-scenario file (derived from the
+    # calling script's name) so a later scenario doesn't clobber an
+    # earlier one's log — post-run analysis needs all of them.
+    local scenario
+    scenario=$(basename "${0:-e2e}" .sh)
+    BOT_LOG="${BOT_LOG:-/tmp/solvcon-bot-e2e.$scenario.log}"
     rm -f "$BOT_LOG"
 }
 
@@ -178,7 +183,24 @@ e2e_post_mention() {
 
 e2e_start_bot() {
     rm -f "$STATE_FILE" "$STATE_FILE.tmp" "$STATE_FILE.lock"
+    # Seed a state file whose ping cursor sits a few minutes in the
+    # past. On a genuine first run (no state file) the bot now seeds
+    # its cursor to "now" and ignores pre-existing comments; these
+    # scenarios post the mention BEFORE starting the bot, modeling a
+    # bot that was already deployed and briefly down — which is a
+    # state-file-present situation, so we fabricate that state.
+    local seed_cursor
+    if seed_cursor=$(date -u -v-5M '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null); then
+        :
+    else
+        seed_cursor=$(date -u -d '5 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')
+    fi
+    printf '{"reviewed_prs":[],"handled_comments":[],"cursor_updated_at":"%s","cursor_id":0}' \
+        "$seed_cursor" > "$STATE_FILE"
     echo "==> starting solvcon-bot ($BIN)"
+    # Scenarios that restart the bot append to the same log; mark each
+    # start so the segments are distinguishable.
+    echo "==== e2e bot start $(date -u '+%Y-%m-%dT%H:%M:%SZ') ====" >> "$BOT_LOG"
     echo "    REVIEWER_KIND: $REVIEWER_KIND"
     [[ -n "${REVIEWER_MODEL:-}" ]] && echo "    REVIEWER_MODEL: $REVIEWER_MODEL"
     [[ -n "${REVIEWER_EFFORT:-}" ]] && echo "    REVIEWER_EFFORT: $REVIEWER_EFFORT"
@@ -198,7 +220,7 @@ e2e_start_bot() {
     MAX_DIFF_BYTES="${MAX_DIFF_BYTES:-200000}" \
     STATE_FILE="$STATE_FILE" \
     SOLVCON_BOT_LOG_LEVEL=info \
-    "$BIN" >"$BOT_LOG" 2>&1 &
+    "$BIN" >>"$BOT_LOG" 2>&1 &
     BOT_PID=$!
     echo "==> bot pid: $BOT_PID  log: $BOT_LOG"
 }

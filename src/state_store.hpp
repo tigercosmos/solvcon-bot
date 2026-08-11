@@ -31,6 +31,14 @@ public:
     // True iff (updated_at, comment_id) <= persisted cursor.
     bool is_at_or_before_cursor(const std::string & updated_at, std::int64_t comment_id) const;
 
+    // Seed the cursor on a first run. An empty cursor means the comment
+    // listing has no `since` bound, so the bot would walk the repo's whole
+    // comment history and fire on ancient mentions. Callers pass "now" as
+    // "YYYY-MM-DDTHH:MM:SSZ" — the clock stays outside this class so the
+    // behavior is testable. Returns true iff the cursor was empty and has
+    // now been set; false (no-op) when a cursor was already persisted.
+    bool init_cursor_if_empty(const std::string & now_iso8601);
+
     void save();
 
 private:

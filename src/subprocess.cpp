@@ -190,7 +190,15 @@ void killpg_terminate_then_kill(pid_t pgid, int wait_ms_before_kill)
     struct timespec ts{};
     ts.tv_sec = wait_ms_before_kill / 1000;
     ts.tv_nsec = (wait_ms_before_kill % 1000) * 1'000'000L;
-    ::nanosleep(&ts, nullptr);
+    // main.cpp installs its SIGINT/SIGTERM handlers WITHOUT SA_RESTART,
+    // so nanosleep can return early with EINTR. Sleep out the REMAINING
+    // time instead, or a signal arriving here would cut the grace period
+    // short and SIGKILL a child that was about to exit cleanly.
+    struct timespec remaining{};
+    while (::nanosleep(&ts, &remaining) != 0 && errno == EINTR)
+    {
+        ts = remaining;
+    }
     ::killpg(pgid, SIGKILL);
 }
 
@@ -401,6 +409,12 @@ RunResult run_subprocess(
                     else if (n < 0)
                     {
                         if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                        // EINTR: our signal handlers carry no SA_RESTART,
+                        // so a signal can interrupt this write before any
+                        // byte is transferred. Nothing was consumed, so
+                        // just retry on the next poll pass rather than
+                        // abandoning the child's stdin.
+                        if (errno == EINTR) continue;
                         // EPIPE: child closed stdin. Stop writing.
                         stdin_done = true;
                         close_if_open(in_fd);
@@ -426,12 +440,16 @@ RunResult run_subprocess(
                             // the AI CLI's output land. We use ::write
                             // (not std::cerr) to skip stdio buffering;
                             // ignore short writes / errors — this is
-                            // best-effort instrumentation.
+                            // best-effort instrumentation. EINTR is the
+                            // one error we do retry (handlers without
+                            // SA_RESTART), so a stray SIGINT/SIGTERM does
+                            // not silently swallow a chunk of the mirror.
                             ssize_t left = n;
                             const char * p = buf;
                             while (left > 0)
                             {
                                 ssize_t w = ::write(STDERR_FILENO, p, left);
+                                if (w < 0 && errno == EINTR) continue;
                                 if (w <= 0) break;
                                 left -= w;
                                 p += w;
@@ -466,13 +484,31 @@ RunResult run_subprocess(
 
     int wait_status = 0;
     // If we already SIGKILL'd above, this still reaps without blocking.
-    pid_t reaped = ::waitpid(pid, &wait_status, 0);
-    if (reaped < 0)
+    //
+    // The loop is mandatory, not defensive: main.cpp installs its SIGINT
+    // and SIGTERM handlers WITHOUT SA_RESTART, so a signal delivered
+    // while we block here makes waitpid fail with EINTR. Returning on
+    // that would leave the child UNREAPED and still RUNNING (no kill is
+    // issued on this path) — we would strand a live reviewer CLI.
+    while (::waitpid(pid, &wait_status, 0) < 0)
     {
-        // Not catastrophic — the child is gone anyway.
+        if (errno == EINTR) continue;
+        // Any other errno should be impossible for a child we forked
+        // ourselves and reap nowhere else (we never set SIGCHLD to
+        // SIG_IGN). Be defensive anyway: never leave a running child
+        // behind. Kill the whole group, then make one non-blocking
+        // attempt to reap so we do not add a zombie either.
+        killpg_terminate_then_kill(pgid, /*wait_ms_before_kill=*/100);
+        int discard = 0;
+        while (::waitpid(pid, &discard, WNOHANG) < 0 && errno == EINTR)
+        {
+            // retry only the interrupted call
+        }
         result.exit_status = -1;
+        return result;
     }
-    else if (WIFEXITED(wait_status))
+
+    if (WIFEXITED(wait_status))
     {
         result.exit_status = WEXITSTATUS(wait_status);
     }

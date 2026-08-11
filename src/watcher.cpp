@@ -25,12 +25,18 @@ inline void log_err (const std::string & m) { solvcon_bot::log_error("watcher", 
 // 401/403/422 are not transient: continuing to retry would just keep
 // failing and the operator would never notice. These get re-thrown out
 // of every catch so they reach main() and exit the process non-zero.
+//
+// The exception is a rate-limited 403, which GithubError marks transient.
+// That one clears on its own, so it must be handled like any other
+// retryable failure — killing the bot over a rate limit is a bug.
+// Must stay in sync with main()'s fatal check.
 inline bool is_fatal_github(const std::exception & e)
 {
     if (auto * ge = dynamic_cast<const GithubError *>(&e))
     {
         const int s = ge->status();
-        return s == 401 || s == 403 || s == 422;
+        if (s == 401 || s == 422) return true;
+        return s == 403 && !ge->transient();
     }
     return false;
 }
@@ -141,67 +147,94 @@ void Watcher::run_auto_path()
 
         for (const auto & r : reviews)
         {
-            if (r.state == "APPROVED")
-            {
-                const std::string marker_key = build_marker_key(
-                    "auto", pr.number, std::nullopt);
+            if (r.state != "APPROVED") continue;
 
-                // Marker dedupe protects against a crash between
-                // post_comment and mark_reviewed. We match the
-                // version-agnostic key so a version bump between
-                // those events still finds the marker.
-                bool already_posted = false;
+            // On a public repo ANY account can submit an APPROVED review,
+            // and dispatching costs a paid AI run. Gate on collaborator
+            // status. We deliberately do NOT mark_reviewed on a skip: a
+            // later approval from a real collaborator must still fire.
+            // The same non-collaborator approval is re-checked each tick,
+            // which is cheap because the reviews list is ETag-cached.
+            bool approver_is_collaborator = false;
+            try
+            {
+                approver_is_collaborator = io_.is_collaborator(r.user.login);
+            }
+            catch (const std::exception & e)
+            {
+                if (is_fatal_github(e)) throw;
+                log_warn("auto: is_collaborator(" + r.user.login
+                         + ") failed: " + e.what());
+                // Bail on this PR; we'll retry next tick.
+                break;
+            }
+
+            if (!approver_is_collaborator)
+            {
+                log_info("auto: ignoring APPROVED review from "
+                         "non-collaborator " + r.user.login + " on PR #"
+                         + std::to_string(pr.number));
+                continue; // a later review in this list may still qualify
+            }
+
+            const std::string marker_key = build_marker_key(
+                "auto", pr.number, std::nullopt);
+
+            // Marker dedupe protects against a crash between
+            // post_comment and mark_reviewed. We match the
+            // version-agnostic key so a version bump between
+            // those events still finds the marker.
+            bool already_posted = false;
+            try
+            {
+                for (const auto & c : io_.list_pr_comments(pr.number))
+                {
+                    if (eq_login(c.user.login, cfg_.bot_handle)
+                        && body_has_marker_key(c.body, marker_key))
+                    {
+                        already_posted = true;
+                        break;
+                    }
+                }
+            }
+            catch (const std::exception & e)
+            {
+                if (is_fatal_github(e)) throw;
+                log_warn("list_pr_comments(" + std::to_string(pr.number)
+                         + ") failed: " + e.what());
+                // Bail on this PR; we'll retry next tick.
+                break;
+            }
+
+            if (!already_posted)
+            {
                 try
                 {
-                    for (const auto & c : io_.list_pr_comments(pr.number))
-                    {
-                        if (eq_login(c.user.login, cfg_.bot_handle)
-                            && body_has_marker_key(c.body, marker_key))
-                        {
-                            already_posted = true;
-                            break;
-                        }
-                    }
+                    dispatch_review(pr.number, "auto", std::nullopt);
                 }
                 catch (const std::exception & e)
                 {
                     if (is_fatal_github(e)) throw;
-                    log_warn("list_pr_comments(" + std::to_string(pr.number)
-                             + ") failed: " + e.what());
-                    // Bail on this PR; we'll retry next tick.
+                    log_err("dispatch_review(" + std::to_string(pr.number)
+                            + ") failed: " + e.what());
+                    // Do NOT mark reviewed; retry next tick.
                     break;
                 }
-
-                if (!already_posted)
-                {
-                    try
-                    {
-                        dispatch_review(pr.number, "auto", std::nullopt);
-                    }
-                    catch (const std::exception & e)
-                    {
-                        if (is_fatal_github(e)) throw;
-                        log_err("dispatch_review(" + std::to_string(pr.number)
-                                + ") failed: " + e.what());
-                        // Do NOT mark reviewed; retry next tick.
-                        break;
-                    }
-                }
-                else
-                {
-                    log_info("auto: marker already present for PR #"
-                             + std::to_string(pr.number)
-                             + " — skipping dispatch");
-                }
-
-                io_.mark_reviewed(pr.number);
-                try { io_.save_state(); }
-                catch (const std::exception & e)
-                {
-                    log_err(std::string("state save failed: ") + e.what());
-                }
-                break; // stop scanning reviews for this PR
             }
+            else
+            {
+                log_info("auto: marker already present for PR #"
+                         + std::to_string(pr.number)
+                         + " — skipping dispatch");
+            }
+
+            io_.mark_reviewed(pr.number);
+            try { io_.save_state(); }
+            catch (const std::exception & e)
+            {
+                log_err(std::string("state save failed: ") + e.what());
+            }
+            break; // stop scanning reviews for this PR
         }
     }
 }
@@ -238,6 +271,10 @@ void Watcher::run_ping_path()
         // A lambda is used so that early-out branches (resolved without
         // dispatch) don't accidentally `continue` past the durable-state
         // commit at the bottom of the loop body.
+        // Set once the comment is confirmed to @-mention us; gates
+        // mark_handled below so the handled set stays small.
+        bool mention_matched = false;
+
         auto classify = [&]() -> bool {
             // GitHub returns >= since on updated_at; tuple-filter to skip
             // anything we've already classified.
@@ -245,6 +282,7 @@ void Watcher::run_ping_path()
             if (io_.handled(c.id)) return true;
             if (eq_login(c.user.login, cfg_.bot_handle)) return true;
             if (!mention_matches(c.body, cfg_.bot_handle)) return true;
+            mention_matched = true;
 
             const int issue_number = parse_issue_number_from_url(c.issue_url);
             if (issue_number <= 0)
@@ -271,9 +309,10 @@ void Watcher::run_ping_path()
             if (!detail.is_pr || detail.state != "open") return true;
 
             const bool is_collab = io_.is_collaborator(c.user.login);
-            // 403 from is_collaborator propagates as exception — fatal per
-            // plan §6 (token scope problem). is_collaborator returns
-            // false for 404 (not a collaborator).
+            // A scope-problem 403 propagates as an exception and is fatal
+            // per plan §6; a rate-limited 403 is marked transient and is
+            // caught by main(), which retries the tick. is_collaborator
+            // returns false for 404 (not a collaborator).
             if (!is_collab) return true;
 
             const std::string marker_key = build_marker_key(
@@ -327,7 +366,12 @@ void Watcher::run_ping_path()
         const bool decided = classify();
         if (decided)
         {
-            io_.mark_handled(c.id);
+            // Only mention comments enter the handled set. Recording every
+            // comment the repo ever sees would grow the state file without
+            // bound, and non-mentions are already covered by the cursor.
+            // Consequence: a comment later edited to add a mention comes
+            // back with a fresh updated_at and does trigger — intended.
+            if (mention_matched) io_.mark_handled(c.id);
             io_.advance_cursor(c.updated_at, c.id);
             try { io_.save_state(); }
             catch (const std::exception & e)

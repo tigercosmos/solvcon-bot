@@ -187,6 +187,17 @@ void StateStore::advance_cursor(const std::string & updated_at, std::int64_t com
     }
 }
 
+bool StateStore::init_cursor_if_empty(const std::string & now_iso8601)
+{
+    if (!cursor_updated_at_.empty()) return false;
+    if (now_iso8601.empty()) return false; // nothing useful to seed with
+    cursor_updated_at_ = now_iso8601;
+    // id 0 keeps is_at_or_before_cursor() from swallowing a comment that
+    // lands in the same second as startup: only ids <= 0 compare as seen.
+    cursor_id_ = 0;
+    return true;
+}
+
 bool StateStore::is_at_or_before_cursor(const std::string & updated_at, std::int64_t comment_id) const
 {
     if (updated_at < cursor_updated_at_) return true;

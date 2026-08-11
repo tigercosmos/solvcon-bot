@@ -330,6 +330,67 @@ void test_get_403_with_rate_limit_remaining_retries()
     EXPECT_EQ(count.load(), 2);
 }
 
+void test_get_403_rate_limited_forever_throws_transient()
+{
+    // The rate limit never clears. After retries are exhausted the error
+    // must still be flagged transient, otherwise watcher/main read it as
+    // a token-scope 403 and exit the process.
+    TestServer ts;
+    std::atomic<int> count{0};
+    ts.svr().Get(R"(/repos/o/r/issues/(\d+))",
+        [&](const httplib::Request &, httplib::Response & res) {
+            ++count;
+            res.status = 403;
+            res.set_header("X-RateLimit-Remaining", "0");
+            res.set_header("Retry-After", "1");
+            res.set_content("rate limited", "text/plain");
+        });
+    GithubClient gh(make_cfg(ts));
+    bool threw = false;
+    int status = 0;
+    bool transient = false;
+    try { (void)gh.get_issue_detail(9); }
+    catch (const GithubError & e)
+    {
+        threw = true;
+        status = e.status();
+        transient = e.transient();
+    }
+    EXPECT(threw);
+    EXPECT_EQ(status, 403);
+    EXPECT(transient);
+    EXPECT_EQ(count.load(), 6); // max_attempts for GETs
+}
+
+void test_get_403_plain_scope_error_is_not_transient()
+{
+    // No Retry-After, no X-RateLimit-Remaining: this is the "token lacks
+    // scope" 403 and must stay fatal (and must not be retried).
+    TestServer ts;
+    std::atomic<int> count{0};
+    ts.svr().Get(R"(/repos/o/r/issues/(\d+))",
+        [&](const httplib::Request &, httplib::Response & res) {
+            ++count;
+            res.status = 403;
+            res.set_content(R"({"message":"Forbidden"})", "application/json");
+        });
+    GithubClient gh(make_cfg(ts));
+    bool threw = false;
+    int status = 0;
+    bool transient = true;
+    try { (void)gh.get_issue_detail(9); }
+    catch (const GithubError & e)
+    {
+        threw = true;
+        status = e.status();
+        transient = e.transient();
+    }
+    EXPECT(threw);
+    EXPECT_EQ(status, 403);
+    EXPECT(!transient);
+    EXPECT_EQ(count.load(), 1); // not retried
+}
+
 void test_get_non_retryable_4xx_throws()
 {
     TestServer ts;
@@ -397,6 +458,91 @@ void test_post_success_writes_body()
     EXPECT(captured_ctype.find("application/json") == 0);
 }
 
+void test_post_rate_limited_403_throws_transient_without_retry()
+{
+    TestServer ts;
+    std::atomic<int> count{0};
+    ts.svr().Post(R"(/repos/o/r/issues/(\d+)/comments)",
+        [&](const httplib::Request &, httplib::Response & res) {
+            ++count;
+            res.status = 403;
+            res.set_header("Retry-After", "30");
+            res.set_content(R"({"message":"API rate limit exceeded"})",
+                            "application/json");
+        });
+    GithubClient gh(make_cfg(ts));
+    bool threw = false;
+    int status = 0;
+    bool transient = false;
+    try { gh.post_comment(9, "hello"); }
+    catch (const GithubError & e)
+    {
+        threw = true;
+        status = e.status();
+        transient = e.transient();
+    }
+    EXPECT(threw);
+    EXPECT_EQ(status, 403);
+    // A rate limit must not look like the fatal scope-403 (main exits
+    // on non-transient 403); the write itself is still never retried.
+    EXPECT(transient);
+    EXPECT_EQ(count.load(), 1);
+}
+
+void test_is_collaborator_result_is_cached()
+{
+    TestServer ts;
+    std::atomic<int> count{0};
+    ts.svr().Get(R"(/repos/o/r/collaborators/(.+))",
+        [&](const httplib::Request & req, httplib::Response & res) {
+            ++count;
+            // alice is a collaborator, bob is not.
+            if (req.path.find("/alice") != std::string::npos) res.status = 204;
+            else
+            {
+                res.status = 404;
+                res.set_content(R"({"message":"Not Found"})", "application/json");
+            }
+        });
+    GithubClient gh(make_cfg(ts));
+    // Both outcomes are served from cache on repeat lookups within the
+    // TTL — the auto path re-checks approvers every tick, and a
+    // non-collaborator approval must not cost one request per tick.
+    EXPECT(gh.is_collaborator("alice"));
+    EXPECT(gh.is_collaborator("alice"));
+    EXPECT(!gh.is_collaborator("bob"));
+    EXPECT(!gh.is_collaborator("bob"));
+    EXPECT_EQ(count.load(), 2);
+}
+
+void test_is_collaborator_scope_403_is_not_cached()
+{
+    TestServer ts;
+    std::atomic<int> count{0};
+    ts.svr().Get(R"(/repos/o/r/collaborators/(.+))",
+        [&](const httplib::Request &, httplib::Response & res) {
+            const int n = ++count;
+            if (n == 1)
+            {
+                res.status = 403;
+                res.set_content(R"({"message":"Forbidden"})", "application/json");
+            }
+            else
+            {
+                res.status = 204;
+            }
+        });
+    GithubClient gh(make_cfg(ts));
+    bool threw = false;
+    try { (void)gh.is_collaborator("alice"); }
+    catch (const GithubError &) { threw = true; }
+    EXPECT(threw);
+    // The error was not cached: once the token is fixed, the next
+    // lookup goes back to the server and succeeds.
+    EXPECT(gh.is_collaborator("alice"));
+    EXPECT_EQ(count.load(), 2);
+}
+
 // --- stream_diff truncation ----------------------------------------------
 
 void test_stream_diff_truncates_at_cap()
@@ -430,6 +576,90 @@ void test_stream_diff_below_cap_not_truncated()
     EXPECT(!d.truncated);
     EXPECT_EQ(d.body.size(), small.size());
     EXPECT_EQ(d.body, small);
+}
+
+void test_stream_diff_retries_rate_limited_403_then_succeeds()
+{
+    // stream_diff has its own retry loop; a rate-limited 403 must be
+    // retried there exactly like a 429 rather than surfacing as fatal.
+    TestServer ts;
+    std::atomic<int> count{0};
+    ts.svr().Get(R"(/repos/o/r/pulls/(\d+))",
+        [&](const httplib::Request &, httplib::Response & res) {
+            const int n = ++count;
+            if (n == 1)
+            {
+                res.status = 403;
+                res.set_header("X-RateLimit-Remaining", "0");
+                res.set_header("Retry-After", "1");
+                res.set_content("secondary rate limit", "text/plain");
+            }
+            else
+            {
+                res.status = 200;
+                res.set_content("diff body", "application/vnd.github.diff");
+            }
+        });
+    GithubClient gh(make_cfg(ts));
+    auto d = gh.stream_diff(9);
+    EXPECT(!d.truncated);
+    EXPECT_EQ(d.body, std::string("diff body"));
+    EXPECT_EQ(count.load(), 2);
+}
+
+void test_stream_diff_403_rate_limited_forever_throws_transient()
+{
+    TestServer ts;
+    std::atomic<int> count{0};
+    ts.svr().Get(R"(/repos/o/r/pulls/(\d+))",
+        [&](const httplib::Request &, httplib::Response & res) {
+            ++count;
+            res.status = 403;
+            res.set_header("Retry-After", "1");
+            res.set_content("secondary rate limit", "text/plain");
+        });
+    GithubClient gh(make_cfg(ts));
+    bool threw = false;
+    int status = 0;
+    bool transient = false;
+    try { (void)gh.stream_diff(9); }
+    catch (const GithubError & e)
+    {
+        threw = true;
+        status = e.status();
+        transient = e.transient();
+    }
+    EXPECT(threw);
+    EXPECT_EQ(status, 403);
+    EXPECT(transient);
+    EXPECT_EQ(count.load(), 6);
+}
+
+void test_stream_diff_plain_403_is_not_transient()
+{
+    TestServer ts;
+    std::atomic<int> count{0};
+    ts.svr().Get(R"(/repos/o/r/pulls/(\d+))",
+        [&](const httplib::Request &, httplib::Response & res) {
+            ++count;
+            res.status = 403;
+            res.set_content("forbidden", "text/plain");
+        });
+    GithubClient gh(make_cfg(ts));
+    bool threw = false;
+    int status = 0;
+    bool transient = true;
+    try { (void)gh.stream_diff(9); }
+    catch (const GithubError & e)
+    {
+        threw = true;
+        status = e.status();
+        transient = e.transient();
+    }
+    EXPECT(threw);
+    EXPECT_EQ(status, 403);
+    EXPECT(!transient);
+    EXPECT_EQ(count.load(), 1); // not retried
 }
 
 // --- diff accept header verification -------------------------------------
@@ -811,11 +1041,19 @@ int main()
     test_get_retries_on_503_then_succeeds();
     test_get_429_with_retry_after_then_succeeds();
     test_get_403_with_rate_limit_remaining_retries();
+    test_get_403_rate_limited_forever_throws_transient();
+    test_get_403_plain_scope_error_is_not_transient();
     test_get_non_retryable_4xx_throws();
     test_post_is_not_retried_on_5xx();
     test_post_success_writes_body();
+    test_post_rate_limited_403_throws_transient_without_retry();
+    test_is_collaborator_result_is_cached();
+    test_is_collaborator_scope_403_is_not_cached();
     test_stream_diff_truncates_at_cap();
     test_stream_diff_below_cap_not_truncated();
+    test_stream_diff_retries_rate_limited_403_then_succeeds();
+    test_stream_diff_403_rate_limited_forever_throws_transient();
+    test_stream_diff_plain_403_is_not_transient();
     test_stream_diff_sends_diff_accept_header();
 
     test_conditional_etag_round_trip_304();

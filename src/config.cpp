@@ -194,6 +194,23 @@ void validate_reviewer_effort(const std::string & v)
     }
 }
 
+// Upper bound for SUBPROCESS_TIMEOUT_SEC (1 day). Read in two places
+// (Config::from_env for the bot, apply_reviewer_env for the
+// run-reviewer tool), so the bound lives here once.
+//
+// The cap is not just a sanity limit: src/reviewer_agent.cpp derives
+// the codexmon kill deadline as `subprocess_timeout_sec +
+// kCodexmonGraceSec` in plain `int`. Accepting values near INT_MAX
+// would make that addition overflow (signed overflow is UB). Capping
+// at 86400 leaves ~2.1e9 seconds of headroom for that grace period
+// and any future additive slack, and no real review runs a day.
+constexpr int kSubprocessTimeoutMaxSec = 86400;
+
+// Upper bound for the three HTTP_*_TIMEOUT_SEC knobs (1 hour). A
+// single GitHub REST call that has not connected/read/written within
+// an hour is wedged; allowing more only delays the failure.
+constexpr int kHttpTimeoutMaxSec = 3600;
+
 } // namespace
 
 ReviewerKind parse_reviewer_kind(const std::string & s)
@@ -310,11 +327,11 @@ void apply_reviewer_env(Config & cfg)
 
     // Subprocess plumbing that the reviewer depends on. These match
     // the same env names used by the full bot config.
-    constexpr int kIntMax = std::numeric_limits<int>::max();
     constexpr std::size_t kSizeMax = std::numeric_limits<std::size_t>::max();
     cfg.max_output_bytes = env_size_or("MAX_OUTPUT_BYTES", cfg.max_output_bytes, 1, kSizeMax);
     cfg.subprocess_timeout_sec = env_int_or(
-        "SUBPROCESS_TIMEOUT_SEC", cfg.subprocess_timeout_sec, 1, kIntMax);
+        "SUBPROCESS_TIMEOUT_SEC", cfg.subprocess_timeout_sec, 1,
+        kSubprocessTimeoutMaxSec);
 
     if (const char * v = std::getenv("REVIEWER_ENV_PASSTHROUGH");
         v != nullptr && *v != '\0')
@@ -334,16 +351,18 @@ Config Config::from_env()
 
     apply_reviewer_env(cfg);
 
-    constexpr int kIntMax = std::numeric_limits<int>::max();
     constexpr std::size_t kSizeMax = std::numeric_limits<std::size_t>::max();
 
     cfg.poll_interval_sec = env_int_or("POLL_INTERVAL_SEC", cfg.poll_interval_sec, 1, 86400);
     cfg.state_file = env_or("STATE_FILE", cfg.state_file);
     cfg.github_api_base_url = env_or("GITHUB_API_BASE_URL", cfg.github_api_base_url);
     cfg.max_diff_bytes = env_size_or("MAX_DIFF_BYTES", cfg.max_diff_bytes, 1, kSizeMax);
-    cfg.http_connect_timeout_sec = env_int_or("HTTP_CONNECT_TIMEOUT_SEC", cfg.http_connect_timeout_sec, 1, kIntMax);
-    cfg.http_read_timeout_sec = env_int_or("HTTP_READ_TIMEOUT_SEC", cfg.http_read_timeout_sec, 1, kIntMax);
-    cfg.http_write_timeout_sec = env_int_or("HTTP_WRITE_TIMEOUT_SEC", cfg.http_write_timeout_sec, 1, kIntMax);
+    cfg.http_connect_timeout_sec = env_int_or(
+        "HTTP_CONNECT_TIMEOUT_SEC", cfg.http_connect_timeout_sec, 1, kHttpTimeoutMaxSec);
+    cfg.http_read_timeout_sec = env_int_or(
+        "HTTP_READ_TIMEOUT_SEC", cfg.http_read_timeout_sec, 1, kHttpTimeoutMaxSec);
+    cfg.http_write_timeout_sec = env_int_or(
+        "HTTP_WRITE_TIMEOUT_SEC", cfg.http_write_timeout_sec, 1, kHttpTimeoutMaxSec);
 
     return cfg;
 }
