@@ -4,6 +4,7 @@
 #include "config.hpp"
 #include "github_client.hpp"
 #include "github_types.hpp"
+#include "reviewer.hpp"
 #include "watcher.hpp"
 
 #include <cstdint>
@@ -126,6 +127,9 @@ struct FakeWatcherIo : solvcon_bot::WatcherIo
     std::map<int, std::vector<IssueComment>> comments; // PR-scoped
     std::vector<IssueComment> issue_comments_stream;   // repo-wide stream
     std::map<int, solvcon_bot::PrDetail> details;
+    std::map<int, solvcon_bot::PrInfo> pr_infos;
+    std::map<std::string, solvcon_bot::FileContent> files_at_ref;
+    bool throw_on_get_pr_info = false;
     // is_collaborator scripting, checked in this order: a login in
     // collab_fatal_throws raises a scope-style (fatal) GithubError, one in
     // collab_transient_throws raises a plain transient failure, one in
@@ -153,6 +157,8 @@ struct FakeWatcherIo : solvcon_bot::WatcherIo
     struct PostCall { int n; std::string body; };
     std::vector<PostCall> posts;
     std::vector<int> reviewer_calls;
+    std::vector<solvcon_bot::ReviewRequest> reviewer_requests;
+    std::vector<std::pair<std::string, std::string>> file_fetch_calls;
     std::vector<int> mark_reviewed_calls;
     std::vector<std::int64_t> mark_handled_calls;
     std::vector<std::pair<std::string, std::int64_t>> advance_cursor_calls;
@@ -226,6 +232,25 @@ struct FakeWatcherIo : solvcon_bot::WatcherIo
         d.is_pr = false;
         return d;
     }
+    solvcon_bot::PrInfo get_pr_info(int n) override
+    {
+        if (throw_on_get_pr_info)
+            throw std::runtime_error("simulated get_pr_info failure");
+        auto it = pr_infos.find(n);
+        if (it != pr_infos.end()) return it->second;
+        solvcon_bot::PrInfo p;
+        p.number = n;
+        p.state = "open";
+        return p;
+    }
+    solvcon_bot::FileContent get_file_at_ref(const std::string & path,
+                                             const std::string & ref) override
+    {
+        file_fetch_calls.push_back({path, ref});
+        auto it = files_at_ref.find(path);
+        if (it != files_at_ref.end()) return it->second;
+        return solvcon_bot::FileContent{};
+    }
     bool is_collaborator(const std::string & u) override
     {
         is_collaborator_calls.push_back(u);
@@ -244,11 +269,12 @@ struct FakeWatcherIo : solvcon_bot::WatcherIo
             throw std::runtime_error("simulated is_collaborator failure");
         return collaborators.count(u) > 0;
     }
-    std::string run_reviewer(const std::string & diff) override
+    std::string run_reviewer(const solvcon_bot::ReviewRequest & r) override
     {
         if (throw_on_reviewer)
             throw std::runtime_error("simulated reviewer failure");
-        reviewer_calls.push_back(static_cast<int>(diff.size()));
+        reviewer_calls.push_back(static_cast<int>(r.diff.size()));
+        reviewer_requests.push_back(r);
         return reviewer_output;
     }
     bool reviewed(int n) override
@@ -444,6 +470,8 @@ void test_auto_path_marker_dedupe_ignores_other_users_markers()
 
 void test_auto_path_truncated_diff_posts_notice_and_skips_reviewer()
 {
+    // truncated == the download hit MAX_DIFF_FETCH_BYTES: the diff is
+    // incomplete, per-file trimming is impossible, only a notice goes out.
     FakeWatcherIo io;
     io.prs = {make_pr(42)};
     io.reviews[42] = {make_review("APPROVED", "alice")};
@@ -452,9 +480,213 @@ void test_auto_path_truncated_diff_posts_notice_and_skips_reviewer()
     Watcher w(make_cfg(), io);
     w.tick();
     EXPECT_EQ(io.posts.size(), static_cast<std::size_t>(1));
-    EXPECT(io.posts[0].body.find("MAX_DIFF_BYTES") != std::string::npos);
+    EXPECT(io.posts[0].body.find("MAX_DIFF_FETCH_BYTES") != std::string::npos);
+    EXPECT(io.posts[0].body.find("skipped") != std::string::npos);
     EXPECT(io.reviewer_calls.empty()); // reviewer not invoked
     EXPECT(io.mark_reviewed_calls == std::vector<int>{42});
+}
+
+// --- dispatch_review enrichment -------------------------------------------
+
+// A two-file diff used by the enrichment tests. Sections are sized so a
+// budget can be picked between them.
+const char * kTwoFileDiff =
+    "diff --git a/small.cc b/small.cc\n"
+    "--- a/small.cc\n"
+    "+++ b/small.cc\n"
+    "@@ -1 +1 @@\n"
+    "-a\n"
+    "+b\n"
+    "diff --git a/big.cc b/big.cc\n"
+    "--- a/big.cc\n"
+    "+++ b/big.cc\n"
+    "@@ -1 +1 @@\n"
+    "-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+    "+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n";
+
+void test_dispatch_passes_pr_metadata_to_reviewer()
+{
+    FakeWatcherIo io;
+    io.prs = {make_pr(42)};
+    io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
+    solvcon_bot::PrInfo info;
+    info.number = 42;
+    info.title = "Add frobnicator";
+    info.body = "Because reasons.";
+    info.head_sha = "0123456789abcdef0123456789abcdef01234567";
+    io.pr_infos[42] = info;
+
+    Watcher w(make_cfg(), io);
+    w.tick();
+
+    EXPECT_EQ(io.reviewer_requests.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(io.reviewer_requests[0].pr_title, std::string("Add frobnicator"));
+    EXPECT_EQ(io.reviewer_requests[0].pr_body, std::string("Because reasons."));
+    EXPECT_EQ(io.reviewer_requests[0].diff, std::string("diff body"));
+}
+
+void test_dispatch_get_pr_info_failure_still_reviews()
+{
+    // Metadata is enrichment: a transient failure falls back to a
+    // bare-diff review instead of losing the dispatch.
+    FakeWatcherIo io;
+    io.prs = {make_pr(42)};
+    io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
+    io.throw_on_get_pr_info = true;
+
+    Watcher w(make_cfg(), io);
+    w.tick();
+
+    EXPECT_EQ(io.posts.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(io.reviewer_requests.size(), static_cast<std::size_t>(1));
+    EXPECT(io.reviewer_requests[0].pr_title.empty());
+    EXPECT(io.file_fetch_calls.empty()); // no head sha -> no context fetch
+    EXPECT(io.mark_reviewed_calls == std::vector<int>{42});
+}
+
+void test_dispatch_oversized_diff_trimmed_per_file()
+{
+    FakeWatcherIo io;
+    io.prs = {make_pr(42)};
+    io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
+    io.diffs[42] = DiffResult{kTwoFileDiff, false};
+
+    Config cfg = make_cfg();
+    cfg.max_diff_bytes = 100;              // fits small.cc only
+    cfg.max_context_total_bytes = 0;       // keep this test about trimming
+    Watcher w(cfg, io);
+    w.tick();
+
+    EXPECT_EQ(io.reviewer_requests.size(), static_cast<std::size_t>(1));
+    const auto & req = io.reviewer_requests[0];
+    EXPECT(req.diff.find("small.cc") != std::string::npos);
+    EXPECT(req.diff.find("big.cc") == std::string::npos);
+    EXPECT_EQ(req.omitted_files.size(), static_cast<std::size_t>(1));
+    EXPECT(req.omitted_files[0].find("big.cc") == 0);
+    // The posted comment discloses partial coverage.
+    EXPECT_EQ(io.posts.size(), static_cast<std::size_t>(1));
+    EXPECT(io.posts[0].body.find("omitted 1") != std::string::npos);
+    EXPECT(io.mark_reviewed_calls == std::vector<int>{42});
+}
+
+void test_dispatch_oversized_diff_nothing_fits_posts_notice()
+{
+    FakeWatcherIo io;
+    io.prs = {make_pr(42)};
+    io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
+    io.diffs[42] = DiffResult{kTwoFileDiff, false};
+
+    Config cfg = make_cfg();
+    cfg.max_diff_bytes = 10; // smaller than every file section
+    Watcher w(cfg, io);
+    w.tick();
+
+    EXPECT(io.reviewer_calls.empty());
+    EXPECT_EQ(io.posts.size(), static_cast<std::size_t>(1));
+    EXPECT(io.posts[0].body.find("MAX_DIFF_BYTES") != std::string::npos);
+    EXPECT(io.posts[0].body.find("skipped") != std::string::npos);
+    EXPECT(io.mark_reviewed_calls == std::vector<int>{42});
+}
+
+void test_dispatch_fetches_context_files_within_caps()
+{
+    FakeWatcherIo io;
+    io.prs = {make_pr(42)};
+    io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
+    io.diffs[42] = DiffResult{kTwoFileDiff, false};
+    solvcon_bot::PrInfo info;
+    info.number = 42;
+    info.title = "t";
+    info.head_sha = "0123456789abcdef0123456789abcdef01234567";
+    io.pr_infos[42] = info;
+    io.files_at_ref["small.cc"] =
+        solvcon_bot::FileContent{true, false, "int b;\n"};
+    io.files_at_ref["big.cc"] =
+        solvcon_bot::FileContent{true, false, "int bbbb;\n"};
+
+    Watcher w(make_cfg(), io);
+    w.tick();
+
+    EXPECT_EQ(io.file_fetch_calls.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(io.file_fetch_calls[0].second, info.head_sha);
+    EXPECT_EQ(io.reviewer_requests.size(), static_cast<std::size_t>(1));
+    const auto & req = io.reviewer_requests[0];
+    EXPECT_EQ(req.context_files.size(), static_cast<std::size_t>(2));
+    EXPECT_EQ(req.context_files[0].path, std::string("small.cc"));
+    EXPECT_EQ(req.context_files[0].content, std::string("int b;\n"));
+}
+
+void test_dispatch_context_skips_binary_truncated_missing()
+{
+    FakeWatcherIo io;
+    io.prs = {make_pr(42)};
+    io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
+    io.diffs[42] = DiffResult{kTwoFileDiff, false};
+    solvcon_bot::PrInfo info;
+    info.number = 42;
+    info.head_sha = "0123456789abcdef0123456789abcdef01234567";
+    io.pr_infos[42] = info;
+    io.files_at_ref["small.cc"] =
+        solvcon_bot::FileContent{true, false, std::string("a\0b", 3)}; // binary
+    io.files_at_ref["big.cc"] =
+        solvcon_bot::FileContent{true, true, "partial"}; // over per-file cap
+
+    Watcher w(make_cfg(), io);
+    w.tick();
+
+    EXPECT_EQ(io.reviewer_requests.size(), static_cast<std::size_t>(1));
+    EXPECT(io.reviewer_requests[0].context_files.empty());
+}
+
+void test_dispatch_context_disabled_by_zero_total()
+{
+    FakeWatcherIo io;
+    io.prs = {make_pr(42)};
+    io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
+    io.diffs[42] = DiffResult{kTwoFileDiff, false};
+    solvcon_bot::PrInfo info;
+    info.number = 42;
+    info.head_sha = "0123456789abcdef0123456789abcdef01234567";
+    io.pr_infos[42] = info;
+
+    Config cfg = make_cfg();
+    cfg.max_context_total_bytes = 0;
+    Watcher w(cfg, io);
+    w.tick();
+
+    EXPECT(io.file_fetch_calls.empty());
+    EXPECT_EQ(io.reviewer_calls.size(), static_cast<std::size_t>(1));
+}
+
+void test_dispatch_context_respects_file_count_cap()
+{
+    FakeWatcherIo io;
+    io.prs = {make_pr(42)};
+    io.reviews[42] = {make_review("APPROVED", "alice")};
+    io.collaborators.insert("alice");
+    io.diffs[42] = DiffResult{kTwoFileDiff, false};
+    solvcon_bot::PrInfo info;
+    info.number = 42;
+    info.head_sha = "0123456789abcdef0123456789abcdef01234567";
+    io.pr_infos[42] = info;
+    io.files_at_ref["small.cc"] =
+        solvcon_bot::FileContent{true, false, "int b;\n"};
+
+    Config cfg = make_cfg();
+    cfg.max_context_files = 1;
+    Watcher w(cfg, io);
+    w.tick();
+
+    EXPECT_EQ(io.file_fetch_calls.size(), static_cast<std::size_t>(1));
+    EXPECT_EQ(io.reviewer_requests[0].context_files.size(),
+              static_cast<std::size_t>(1));
 }
 
 void test_auto_path_dispatch_failure_does_not_mark_reviewed()
@@ -984,6 +1216,14 @@ int main()
     test_auto_path_marker_dedupe_skips_post_but_marks_reviewed();
     test_auto_path_marker_dedupe_ignores_other_users_markers();
     test_auto_path_truncated_diff_posts_notice_and_skips_reviewer();
+    test_dispatch_passes_pr_metadata_to_reviewer();
+    test_dispatch_get_pr_info_failure_still_reviews();
+    test_dispatch_oversized_diff_trimmed_per_file();
+    test_dispatch_oversized_diff_nothing_fits_posts_notice();
+    test_dispatch_fetches_context_files_within_caps();
+    test_dispatch_context_skips_binary_truncated_missing();
+    test_dispatch_context_disabled_by_zero_total();
+    test_dispatch_context_respects_file_count_cap();
     test_auto_path_dispatch_failure_does_not_mark_reviewed();
     test_auto_path_list_reviews_failure_continues_to_next_pr();
     test_auto_path_takes_first_approval_only_one_review_posted();

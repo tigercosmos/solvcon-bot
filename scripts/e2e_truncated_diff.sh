@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# E2E: PR diff exceeds MAX_DIFF_BYTES. The bot should NOT invoke the
-# reviewer; instead it should post a "(diff exceeds MAX_DIFF_BYTES …
-# — skipped)" notice with the marker. We force this by setting
-# MAX_DIFF_BYTES very small (1).
+# E2E: PR diff exceeds the download cap. The bot should NOT invoke the
+# reviewer; instead it should post a "(diff exceeds MAX_DIFF_FETCH_BYTES
+# … — skipped)" notice with the marker. We force this by setting
+# MAX_DIFF_BYTES=1: the fetch cap defaults to 5x that (5 bytes), so any
+# real diff overruns the download and hits the skip path.
 
 # shellcheck source=scripts/e2e_lib.sh
 source "$(dirname "$0")/e2e_lib.sh"
@@ -37,8 +38,11 @@ fi
 reply=$(gh api "repos/$GITHUB_REPO/issues/comments/$BOT_REPLY_ID")
 reply_body=$(echo "$reply" | jq -r '.body')
 
-# The notice contains "MAX_DIFF_BYTES=1" and the literal "skipped" word.
-if [[ "$reply_body" != *"MAX_DIFF_BYTES"* ]] \
+# The notice names the cap that fired (MAX_DIFF_FETCH_BYTES for a
+# download overrun; MAX_DIFF_BYTES when nothing fit the review budget)
+# and the literal "skipped" word.
+if { [[ "$reply_body" != *"MAX_DIFF_FETCH_BYTES"* ]] \
+     && [[ "$reply_body" != *"MAX_DIFF_BYTES"* ]]; } \
    || [[ "$reply_body" != *"skipped"* ]]; then
     echo "fatal: bot reply does not look like the truncated-diff notice:" >&2
     echo "$reply_body" >&2

@@ -35,6 +35,11 @@ struct Config
     std::string reviewer_model;   // --model NAME (claude/codex; empty -> CLI default)
     std::string reviewer_effort;  // CLAUDE_EFFORT env (claude) / reasoning.effort (codex)
     std::string reviewer_prompt;  // override built-in review prompt; empty -> default
+    // Operator-authored, repo-specific review conventions appended to
+    // the prompt (style rules, known invariants, what to skip). Env:
+    // REVIEWER_GUIDE (literal) / REVIEWER_GUIDE_FILE (path), mutually
+    // exclusive. Empty -> no guide section.
+    std::string reviewer_guide;
     // For Mock only:
     int reviewer_mock_exit_code = 0;     // non-zero -> mock fails with this code
     std::string reviewer_mock_output;    // if non-empty, mock prints this instead of echoing
@@ -42,8 +47,25 @@ struct Config
     int poll_interval_sec = 30;
     std::string state_file = "./solvcon-bot.state";
 
+    // Review-payload budget for the diff. A diff over this size is
+    // trimmed per file (whole file sections dropped, listed in the
+    // posted comment) rather than reviewed partially mid-hunk.
     std::size_t max_diff_bytes = 200000;
+    // Hard cap on the diff download itself. Only a diff bigger than
+    // this is skipped outright. Env MAX_DIFF_FETCH_BYTES; when unset,
+    // defaults to 5x max_diff_bytes. Must be >= max_diff_bytes.
+    std::size_t max_diff_fetch_bytes = 1000000;
     std::size_t max_output_bytes = 60000;
+
+    // Changed-file context: the watcher fetches the head-side contents
+    // of files touched by the diff and appends them (fenced) to the
+    // review payload. A file over the per-file cap, a binary file, or
+    // anything past the total/count caps is silently skipped — context
+    // is best-effort enrichment, never a reason to fail a review.
+    // MAX_CONTEXT_TOTAL_BYTES=0 disables the feature.
+    std::size_t max_context_file_bytes = 65536;   // MAX_CONTEXT_FILE_BYTES
+    std::size_t max_context_total_bytes = 262144; // MAX_CONTEXT_TOTAL_BYTES
+    std::size_t max_context_files = 10;           // MAX_CONTEXT_FILES
 
     // Reviewer wall-clock limit. Env SUBPROCESS_TIMEOUT_SEC, accepted
     // range 1..86400 (1 day). The upper bound is deliberate:

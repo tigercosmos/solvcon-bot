@@ -133,6 +133,8 @@ All configuration comes from environment variables. Required:
 | `REVIEWER_EFFORT` | Optional. For claude, exported as `CLAUDE_EFFORT` in the child env. For codex, passed as `-c reasoning.effort=$EFFORT`. cursor has no effort knob. Empty falls back to **`high`**. Other values: `minimal`/`low`/`medium`/`xhigh`. |
 | `REVIEWER_PROMPT` | Optional literal prompt that replaces the built-in preamble. Mutually exclusive with `REVIEWER_PROMPT_FILE`. |
 | `REVIEWER_PROMPT_FILE` | Optional path whose contents replace the built-in preamble. |
+| `REVIEWER_GUIDE` | Optional repo-specific review guide (style rules, invariants, what to skip) **appended** to the prompt — default or overridden. Mutually exclusive with `REVIEWER_GUIDE_FILE`. |
+| `REVIEWER_GUIDE_FILE` | Optional path whose contents are appended as the review guide. |
 | `REVIEWER_MOCK_EXIT_CODE` | Mock-only. Non-zero forces the mock to write to stderr and exit with this code. Used by e2e-failure. |
 | `REVIEWER_MOCK_OUTPUT` | Mock-only. If set, the mock prints this instead of echoing the diff. |
 
@@ -142,7 +144,11 @@ Optional:
 |---|---|---|
 | `POLL_INTERVAL_SEC` | `30` | Polling cadence in seconds. |
 | `STATE_FILE` | `./solvcon-bot.state` | Persistence + lock-file base path (`.lock` and `.tmp` suffixes used during save). |
-| `MAX_DIFF_BYTES` | `200000` | Abort diff download once accumulated bytes exceed this; the bot then posts a "diff too big" notice instead of running the reviewer. |
+| `MAX_DIFF_BYTES` | `200000` | Review-payload budget for the diff. A bigger diff is trimmed at file granularity: whole `diff --git` sections are kept in order while they fit, dropped sections are listed both to the reviewer (inside the fenced metadata) and in the posted comment. Only when no complete file section fits is the review skipped with a notice. |
+| `MAX_DIFF_FETCH_BYTES` | 5× `MAX_DIFF_BYTES` | Hard cap on the diff download itself (trimming needs the whole diff in hand). A diff bigger than this is skipped with a notice. Must be ≥ `MAX_DIFF_BYTES`. |
+| `MAX_CONTEXT_FILE_BYTES` | `65536` | Per-file cap for changed-file context: the bot fetches the head-side contents of files the diff touches and appends them (fenced) to the review payload. Files over the cap, binaries, and deleted files are skipped. |
+| `MAX_CONTEXT_TOTAL_BYTES` | `262144` | Total byte budget for changed-file context. `0` disables context fetching entirely. |
+| `MAX_CONTEXT_FILES` | `10` | Max context files fetched per review (bounds the extra API calls). |
 | `MAX_OUTPUT_BYTES` | `60000` | Cap on the review body (read from codexmon's result file, or the mock's stdout); further bytes are dropped with a truncation note. codexmon's own status output has a separate fixed 1 MiB capture cap so a small body cap can't corrupt the status JSON. |
 | `SUBPROCESS_TIMEOUT_SEC` | `300` | Wall-clock limit on a review, passed to `codexmon run --wall-timeout`. codexmon kills the stuck agent and reports why; the bot only force-kills codexmon itself if it overruns by 60s. Also the hard timeout for the mock kind. |
 | `CODEXMON_BIN` | `codexmon` | Path to the codexmon executable (default: PATH lookup). Install with `make codexmon` / `scripts/install_codexmon.sh`. |
@@ -236,6 +242,15 @@ instead of on the first PR hours later.
 The built-in review prompt is in `default_review_prompt()` (`src/reviewer.cpp`).
 Override per-deployment with `REVIEWER_PROMPT` (literal) or
 `REVIEWER_PROMPT_FILE` (path; mutually exclusive with the literal).
+To keep the built-in prompt but teach the reviewer repo conventions,
+set `REVIEWER_GUIDE` / `REVIEWER_GUIDE_FILE` instead — its contents are
+appended to the prompt as a trusted "project review guide" section.
+
+The payload piped to the agent contains, in order: the prompt (+ guide),
+an instruction paragraph naming the fences, then nonce-fenced untrusted
+sections — PR title/description, the diff, and the post-change contents
+of changed files (fetched from the PR head within the `MAX_CONTEXT_*`
+caps, so the AI sees whole files instead of ±3 lines around each hunk).
 
 Auth lives in the CLI's home directory by default — codex uses
 `~/.codex`, claude uses the macOS keychain (which is why `USER` is in

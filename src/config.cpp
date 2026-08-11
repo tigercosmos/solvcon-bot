@@ -141,15 +141,17 @@ std::string lc(const std::string & s)
 }
 
 // Read a text file at `path` into a string, refusing inputs larger
-// than `max_bytes` so a misconfigured REVIEWER_PROMPT_FILE pointed at
-// /dev/zero or a huge log can't OOM the bot at startup.
-std::string read_text_file(const std::string & path, std::size_t max_bytes)
+// than `max_bytes` so a misconfigured *_FILE env var pointed at
+// /dev/zero or a huge log can't OOM the bot at startup. `label` names
+// the env var in error messages.
+std::string read_text_file(const char * label, const std::string & path,
+                           std::size_t max_bytes)
 {
     std::ifstream ifs(path, std::ios::binary);
     if (!ifs)
     {
         throw std::runtime_error(
-            "REVIEWER_PROMPT_FILE could not be opened: " + path);
+            std::string(label) + " could not be opened: " + path);
     }
     std::string out;
     out.reserve(4096);
@@ -160,7 +162,7 @@ std::string read_text_file(const std::string & path, std::size_t max_bytes)
         if (out.size() + static_cast<std::size_t>(n) > max_bytes)
         {
             throw std::runtime_error(
-                "REVIEWER_PROMPT_FILE exceeds the " + std::to_string(max_bytes)
+                std::string(label) + " exceeds the " + std::to_string(max_bytes)
                 + "-byte cap: " + path);
         }
         out.append(buf, static_cast<std::size_t>(n));
@@ -274,7 +276,27 @@ void apply_reviewer_env(Config & cfg)
         constexpr std::size_t kPromptFileMax = 256 * 1024;
         if (!p.empty()) cfg.reviewer_prompt = p;
         else if (!pf.empty())
-            cfg.reviewer_prompt = read_text_file(pf, kPromptFileMax);
+            cfg.reviewer_prompt = read_text_file(
+                "REVIEWER_PROMPT_FILE", pf, kPromptFileMax);
+    }
+
+    // Project review guide: same literal/file pair as the prompt, but
+    // additive — it is appended to the (default or overridden) prompt
+    // rather than replacing it, so operators can keep the built-in
+    // instructions and still teach the reviewer repo conventions.
+    {
+        const std::string g = env_or("REVIEWER_GUIDE", "");
+        const std::string gf = env_or("REVIEWER_GUIDE_FILE", "");
+        if (!g.empty() && !gf.empty())
+        {
+            throw std::runtime_error(
+                "REVIEWER_GUIDE and REVIEWER_GUIDE_FILE are mutually exclusive");
+        }
+        constexpr std::size_t kGuideFileMax = 256 * 1024;
+        if (!g.empty()) cfg.reviewer_guide = g;
+        else if (!gf.empty())
+            cfg.reviewer_guide = read_text_file(
+                "REVIEWER_GUIDE_FILE", gf, kGuideFileMax);
     }
 
     // Mock knobs. Defaults are inert.
@@ -357,6 +379,28 @@ Config Config::from_env()
     cfg.state_file = env_or("STATE_FILE", cfg.state_file);
     cfg.github_api_base_url = env_or("GITHUB_API_BASE_URL", cfg.github_api_base_url);
     cfg.max_diff_bytes = env_size_or("MAX_DIFF_BYTES", cfg.max_diff_bytes, 1, kSizeMax);
+
+    // Fetch cap: default tracks the review budget so raising
+    // MAX_DIFF_BYTES alone keeps the two consistent. An explicit value
+    // below the budget would make the budget unreachable — fail loud.
+    {
+        const std::size_t five_x = (cfg.max_diff_bytes > kSizeMax / 5)
+            ? kSizeMax : cfg.max_diff_bytes * 5;
+        cfg.max_diff_fetch_bytes = env_size_or(
+            "MAX_DIFF_FETCH_BYTES", five_x, 1, kSizeMax);
+        if (cfg.max_diff_fetch_bytes < cfg.max_diff_bytes)
+        {
+            throw std::runtime_error(
+                "MAX_DIFF_FETCH_BYTES must be >= MAX_DIFF_BYTES");
+        }
+    }
+
+    cfg.max_context_file_bytes = env_size_or(
+        "MAX_CONTEXT_FILE_BYTES", cfg.max_context_file_bytes, 1, kSizeMax);
+    cfg.max_context_total_bytes = env_size_or(
+        "MAX_CONTEXT_TOTAL_BYTES", cfg.max_context_total_bytes, 0, kSizeMax);
+    cfg.max_context_files = env_size_or(
+        "MAX_CONTEXT_FILES", cfg.max_context_files, 0, kSizeMax);
     cfg.http_connect_timeout_sec = env_int_or(
         "HTTP_CONNECT_TIMEOUT_SEC", cfg.http_connect_timeout_sec, 1, kHttpTimeoutMaxSec);
     cfg.http_read_timeout_sec = env_int_or(

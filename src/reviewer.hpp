@@ -17,6 +17,35 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// Post-change contents of one file touched by the diff, fetched from
+// the PR head. Fenced into the review payload as extra context so the
+// reviewer sees the whole file, not just +/-3 lines around each hunk.
+struct ContextFile
+{
+    std::string path;
+    std::string content;
+};
+
+// Everything the reviewer receives about one PR. Only `diff` is
+// required; the rest enriches the payload when the watcher has it
+// (run-reviewer and tests often ship a bare diff).
+//
+// All of it except the operator's prompt/guide is authored by the PR
+// submitter and is therefore untrusted — assemble_review_stdin fences
+// each piece accordingly.
+struct ReviewRequest
+{
+    std::string diff;
+    std::string pr_title;
+    std::string pr_body;
+    std::vector<ContextFile> context_files;
+    // Human-readable "path (N bytes)" entries for diff file sections
+    // dropped by trim_diff_to_budget. Shown to the reviewer (inside the
+    // metadata fence — paths are attacker-chosen) so it knows coverage
+    // is partial.
+    std::vector<std::string> omitted_files;
+};
+
 // Abstract code-reviewer interface. Two concrete implementations:
 // MockReviewer (src/reviewer.cpp, no AI, for tests/e2e) and
 // AgentReviewer (src/reviewer_agent.cpp), which delegates every AI
@@ -28,9 +57,18 @@ class IReviewer
 public:
     virtual ~IReviewer() = default;
 
-    // Returns the review body for the given diff. Throws
+    // Returns the review body for the given request. Throws
     // ReviewerError on timeout, non-zero exit, or spawn failure.
-    virtual std::string run(const std::string & diff) = 0;
+    virtual std::string run(const ReviewRequest & request) = 0;
+
+    // Convenience: review a bare diff with no metadata or context
+    // (run-reviewer tool, tests).
+    std::string run(const std::string & diff)
+    {
+        ReviewRequest request;
+        request.diff = diff;
+        return run(request);
+    }
 
     // Returns the reviewer's kind for logging.
     virtual ReviewerKind kind() const = 0;
@@ -89,24 +127,87 @@ std::string generate_diff_fence_nonce();
 //
 //   <prompt>
 //
-//   <one instruction line naming both fences>
+//   <instruction paragraph naming every fence present>
+//   BEGIN_PR_METADATA_<nonce>          (only when title/body/omissions exist)
+//   PR title: ...
+//   PR description:
+//   ...
+//   END_PR_METADATA_<nonce>
 //   BEGIN_DIFF_<nonce>
 //   <diff>
 //   END_DIFF_<nonce>
+//   BEGIN_FILE_<nonce> <path>          (one pair per context file)
+//   <post-change file content>
+//   END_FILE_<nonce>
 //
-// The nonce-suffixed fences are unforgeable from inside the diff, and
-// the instruction line carries the fence names to the model at runtime
-// so the scheme also works with an operator-supplied prompt (which
-// cannot know the nonce). Lives in the header purely for testability.
+// Every PR-author-controlled piece (metadata, diff, file contents)
+// lives between nonce-suffixed fences that are unforgeable from inside
+// the payload, and the instruction paragraph carries the fence names to
+// the model at runtime so the scheme also works with an
+// operator-supplied prompt (which cannot know the nonce). Lives in the
+// header purely for testability.
 //
-// The two-argument form draws a fresh nonce per call; the three-argument
-// form takes an explicit nonce so tests can be byte-exact. Callers must
-// not reuse a nonce across runs.
+// The nonce-less forms draw a fresh nonce per call; the explicit-nonce
+// forms exist so tests can be byte-exact. Callers must not reuse a
+// nonce across runs. The (prompt, diff) forms are shorthand for a
+// request carrying only a diff.
+std::string assemble_review_stdin(const std::string & prompt,
+                                  const ReviewRequest & request);
+std::string assemble_review_stdin(const std::string & prompt,
+                                  const ReviewRequest & request,
+                                  const std::string & nonce);
 std::string assemble_review_stdin(const std::string & prompt,
                                   const std::string & diff);
 std::string assemble_review_stdin(const std::string & prompt,
                                   const std::string & diff,
                                   const std::string & nonce);
+
+// Prompt + operator guide -> effective prompt. The guide is trusted
+// operator input, so it sits with the prompt, outside the fences. No-op
+// when the guide is empty.
+std::string compose_prompt_with_guide(const std::string & prompt,
+                                      const std::string & guide);
+
+// --- diff surgery ---------------------------------------------------------
+//
+// Pure helpers over a unified diff as served by GitHub's
+// application/vnd.github.diff media type ("diff --git" section per
+// file). No I/O; exposed for unit tests.
+
+// One per-file section of the diff, byte-preserved.
+struct DiffFileSection
+{
+    std::string path;  // new-side path; old-side path when deleted; ""
+                       // when unparseable (quoted/binary oddities)
+    bool deleted = false;
+    std::string text;  // the full section, including its headers
+};
+
+struct DiffSplit
+{
+    std::string preamble; // bytes before the first "diff --git" (normally "")
+    std::vector<DiffFileSection> files;
+};
+
+DiffSplit split_diff_by_file(const std::string & diff);
+
+// Keep whole file sections, in order, while they fit `budget` bytes;
+// drop (and record) sections that do not. A dropped section does not
+// stop later, smaller sections from being kept.
+struct DiffTrimResult
+{
+    std::string diff;                  // concatenated kept sections
+    std::size_t kept = 0;              // number of kept file sections
+    std::vector<std::string> omitted;  // "path (N bytes)" per dropped section
+};
+
+DiffTrimResult trim_diff_to_budget(const std::string & diff,
+                                   std::size_t budget);
+
+// Deduplicated new-side paths of files the diff touches, excluding
+// deletions and sections whose path could not be parsed. These are the
+// candidates for head-content context fetching.
+std::vector<std::string> changed_paths(const std::string & diff);
 
 // Review bodies are capped at MAX_OUTPUT_BYTES. When that fires we
 // append a notice to the returned body so the posted comment doesn't

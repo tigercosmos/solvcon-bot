@@ -50,6 +50,8 @@ void print_usage(std::ostream & os)
        << "  REVIEWER_EFFORT        CLAUDE_EFFORT (claude) or reasoning.effort (codex)\n"
        << "  REVIEWER_PROMPT        literal prompt text\n"
        << "  REVIEWER_PROMPT_FILE   path whose contents replace the default prompt\n"
+       << "  REVIEWER_GUIDE         repo-specific guide appended to the prompt\n"
+       << "  REVIEWER_GUIDE_FILE    path whose contents are appended to the prompt\n"
        << "  REVIEWER_MOCK_EXIT_CODE non-zero forces mock to fail (e2e helper)\n"
        << "  REVIEWER_MOCK_OUTPUT   if set, mock prints this instead of echoing\n"
        << "  REVIEWER_ENV_PASSTHROUGH comma-separated env-var names\n"
@@ -168,7 +170,9 @@ int main(int argc, char ** argv)
     std::string err_msg;
     try
     {
-        out = rv->run(diff);
+        solvcon_bot::ReviewRequest request;
+        request.diff = diff;
+        out = rv->run(request);
     }
     catch (const std::exception & e)
     {

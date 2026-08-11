@@ -182,6 +182,73 @@ void test_issue_comment()
 
 // --- parse_issue_number_from_url -----------------------------------------
 
+// --- PrInfo ---------------------------------------------------------------
+
+void test_pr_info_parse_full()
+{
+    // GET /pulls/{n} shape: title/body at top level, head sha nested.
+    // The body carries JSON escapes that must be decoded for the review
+    // payload.
+    const std::string sample =
+        R"({"number":12,"state":"open","title":"Fix \"quoted\" thing",)"
+        R"("body":"line1\nline2\ttabbed","head":{"sha":"deadbeefcafe","ref":"feat/x"},)"
+        R"("user":{"login":"someone"}})";
+    PrInfo p;
+    p.from_json(sample);
+    EXPECT_EQ(p.number, 12);
+    EXPECT_EQ(p.state, std::string("open"));
+    EXPECT_EQ(p.title, std::string("Fix \"quoted\" thing"));
+    EXPECT_EQ(p.body, std::string("line1\nline2\ttabbed"));
+    EXPECT_EQ(p.head_sha, std::string("deadbeefcafe"));
+
+    PrInfo p2;
+    p2.from_json(p.to_json());
+    EXPECT_EQ(p2.number, p.number);
+    EXPECT_EQ(p2.title, p.title);
+    EXPECT_EQ(p2.body, p.body);
+    EXPECT_EQ(p2.head_sha, p.head_sha);
+}
+
+void test_pr_info_null_body_is_empty()
+{
+    // A PR without a description has "body": null, not "".
+    const std::string sample =
+        R"({"number":3,"state":"open","title":"t","body":null,"head":{"sha":"abc"}})";
+    PrInfo p;
+    p.from_json(sample);
+    EXPECT_EQ(p.body, std::string(""));
+    EXPECT_EQ(p.title, std::string("t"));
+}
+
+// --- json_unescape --------------------------------------------------------
+
+void test_json_unescape_simple_escapes()
+{
+    EXPECT_EQ(json_unescape(R"(a\nb\tc\"d\\e\/f)"),
+              std::string("a\nb\tc\"d\\e/f"));
+    EXPECT_EQ(json_unescape("plain"), std::string("plain"));
+    EXPECT_EQ(json_unescape(""), std::string(""));
+}
+
+void test_json_unescape_unicode()
+{
+    // BMP code point: é -> é as UTF-8.
+    EXPECT_EQ(json_unescape("caf\\u00e9"), std::string("caf\xc3\xa9"));
+    // Surrogate pair: U+1F600 (emoji) -> 4-byte UTF-8.
+    EXPECT_EQ(json_unescape("\\ud83d\\ude00"),
+              std::string("\xf0\x9f\x98\x80"));
+    // Unpaired surrogate degrades to U+FFFD, not invalid UTF-8.
+    EXPECT_EQ(json_unescape(R"(x\ud83dy)"),
+              std::string("x\xef\xbf\xbdy"));
+}
+
+void test_json_unescape_malformed_kept_verbatim()
+{
+    EXPECT_EQ(json_unescape(R"(a\qb)"), std::string("a\\qb"));
+    EXPECT_EQ(json_unescape(R"(tail\)"), std::string("tail\\"));
+    EXPECT_EQ(json_unescape(R"(bad\u12)"), std::string("bad\\u12"));
+}
+
 void test_parse_issue_number_from_url()
 {
     EXPECT_EQ(parse_issue_number_from_url("https://api.github.com/repos/o/r/issues/55"), 55);
@@ -204,6 +271,11 @@ int main()
     test_pr_detail_is_pr_false();
     test_pr_detail_closed_pr();
     test_issue_comment();
+    test_pr_info_parse_full();
+    test_pr_info_null_body_is_empty();
+    test_json_unescape_simple_escapes();
+    test_json_unescape_unicode();
+    test_json_unescape_malformed_kept_verbatim();
     test_parse_issue_number_from_url();
 
     std::cerr << "github_types tests: " << g_passed << " passed, "

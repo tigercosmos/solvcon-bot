@@ -60,6 +60,9 @@ const char * const k_all_vars[] = {
     "REVIEWER_ENV_PASSTHROUGH",
     "REVIEWER_KIND", "REVIEWER_MODEL", "REVIEWER_EFFORT",
     "REVIEWER_PROMPT", "REVIEWER_PROMPT_FILE",
+    "REVIEWER_GUIDE", "REVIEWER_GUIDE_FILE",
+    "MAX_DIFF_FETCH_BYTES", "MAX_CONTEXT_FILE_BYTES",
+    "MAX_CONTEXT_TOTAL_BYTES", "MAX_CONTEXT_FILES",
     "REVIEWER_MOCK_EXIT_CODE", "REVIEWER_MOCK_OUTPUT",
     "REVIEWER_STREAM_IO", "REVIEWER_HEARTBEAT_SEC",
     "GITHUB_API_BASE_URL",
@@ -269,6 +272,71 @@ void test_reviewer_prompt_from_file()
     EXPECT_EQ(c.reviewer_prompt, std::string(body));
 
     ::unlink(path_buf);
+}
+
+void test_reviewer_guide_literal_and_file()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_GUIDE", "no new deps", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.reviewer_guide, std::string("no new deps"));
+
+    char path_buf[] = "/tmp/solvcon-bot-guide-XXXXXX";
+    int fd = ::mkstemp(path_buf);
+    EXPECT(fd >= 0);
+    if (fd < 0) return;
+    const char body[] = "guide from file\n";
+    (void)!::write(fd, body, sizeof(body) - 1);
+    ::close(fd);
+    ::unsetenv("REVIEWER_GUIDE");
+    ::setenv("REVIEWER_GUIDE_FILE", path_buf, 1);
+    Config c2 = Config::from_env();
+    EXPECT_EQ(c2.reviewer_guide, std::string(body));
+    ::unlink(path_buf);
+}
+
+void test_reviewer_guide_and_guide_file_mutually_exclusive()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("REVIEWER_GUIDE", "a", 1);
+    ::setenv("REVIEWER_GUIDE_FILE", "/tmp/whatever", 1);
+    EXPECT(throws_with_substring(
+        [] { (void)Config::from_env(); }, "mutually exclusive"));
+}
+
+void test_max_diff_fetch_bytes_defaults_to_five_x_budget()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("MAX_DIFF_BYTES", "1000", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.max_diff_fetch_bytes, static_cast<std::size_t>(5000));
+}
+
+void test_max_diff_fetch_bytes_explicit_below_budget_rejected()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("MAX_DIFF_BYTES", "1000", 1);
+    ::setenv("MAX_DIFF_FETCH_BYTES", "999", 1);
+    EXPECT(throws_with_substring(
+        [] { (void)Config::from_env(); },
+        "MAX_DIFF_FETCH_BYTES must be >= MAX_DIFF_BYTES"));
+}
+
+void test_context_knobs_parsed_and_zero_total_allowed()
+{
+    clear_env();
+    set_required_defaults();
+    ::setenv("MAX_CONTEXT_FILE_BYTES", "111", 1);
+    ::setenv("MAX_CONTEXT_TOTAL_BYTES", "0", 1);
+    ::setenv("MAX_CONTEXT_FILES", "3", 1);
+    Config c = Config::from_env();
+    EXPECT_EQ(c.max_context_file_bytes, static_cast<std::size_t>(111));
+    EXPECT_EQ(c.max_context_total_bytes, static_cast<std::size_t>(0));
+    EXPECT_EQ(c.max_context_files, static_cast<std::size_t>(3));
 }
 
 void test_reviewer_prompt_and_prompt_file_mutually_exclusive()
@@ -682,6 +750,11 @@ int main()
     test_reviewer_prompt_literal();
     test_reviewer_prompt_from_file();
     test_reviewer_prompt_and_prompt_file_mutually_exclusive();
+    test_reviewer_guide_literal_and_file();
+    test_reviewer_guide_and_guide_file_mutually_exclusive();
+    test_max_diff_fetch_bytes_defaults_to_five_x_budget();
+    test_max_diff_fetch_bytes_explicit_below_budget_rejected();
+    test_context_knobs_parsed_and_zero_total_allowed();
     test_reviewer_prompt_file_missing();
     test_reviewer_prompt_file_too_large();
     test_reviewer_argv_rejected_with_migration_message();

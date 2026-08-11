@@ -67,6 +67,22 @@ struct PrDetail : solvcon::SerializableItem
     void from_json(const std::string & json) override;
 };
 
+// GET /repos/{o}/{r}/pulls/{n} — the subset the reviewer payload needs.
+// Hand-rolled JSON: `body` is null (not "") for description-less PRs,
+// and title/body must be unescaped (the serialization macro keeps JSON
+// escape sequences intact, which would feed literal "\n" to the AI).
+struct PrInfo : solvcon::SerializableItem
+{
+    int number = 0;
+    std::string state;
+    std::string title;
+    std::string body;
+    std::string head_sha;
+
+    std::string to_json() const override;
+    void from_json(const std::string & json) override;
+};
+
 struct IssueComment : solvcon::SerializableItem
 {
     std::int64_t id = 0;
@@ -84,6 +100,13 @@ struct IssueComment : solvcon::SerializableItem
         register_member("issue_url", issue_url);
         register_member("user", user);)
 };
+
+// Decode the JSON string-escape sequences in `raw` (the text between a
+// JSON string's quotes): \" \\ \/ \b \f \n \r \t and \uXXXX including
+// surrogate pairs, emitted as UTF-8. Malformed escapes are kept
+// verbatim rather than throwing — GitHub emits well-formed JSON, and a
+// lenient decoder can't be wedged by an odd byte in a PR title.
+std::string json_unescape(const std::string & raw);
 
 // Extract the trailing integer from an issue_url such as
 // "https://api.github.com/repos/foo/bar/issues/42". Returns -1 if no

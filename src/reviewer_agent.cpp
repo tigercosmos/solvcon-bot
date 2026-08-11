@@ -106,8 +106,10 @@ public:
         , m_model(cfg.reviewer_model.empty() ? m_traits.default_model
                                              : cfg.reviewer_model)
         , m_effort(cfg.reviewer_effort.empty() ? "high" : cfg.reviewer_effort)
-        , m_prompt(cfg.reviewer_prompt.empty() ? default_review_prompt()
-                                               : cfg.reviewer_prompt)
+        , m_prompt(compose_prompt_with_guide(
+              cfg.reviewer_prompt.empty() ? default_review_prompt()
+                                          : cfg.reviewer_prompt,
+              cfg.reviewer_guide))
         , m_max_output_bytes(cfg.max_output_bytes)
         , m_wall_timeout_sec(cfg.subprocess_timeout_sec)
         , m_idle_timeout_sec(cfg.reviewer_idle_timeout_sec)
@@ -120,9 +122,9 @@ public:
     ReviewerKind kind() const override { return m_kind; }
 
     // Test introspection: composed codexmon invocation for the given
-    // diff. Monitor flags come before `--`; everything after it is
+    // request. Monitor flags come before `--`; everything after it is
     // passed to the agent CLI verbatim.
-    ReviewerInvocation build_invocation(const std::string & diff) const
+    ReviewerInvocation build_invocation(const ReviewRequest & request) const
     {
         ReviewerInvocation inv;
         inv.argv = {m_codexmon_bin, "run", "--json", "--stdin"};
@@ -143,7 +145,7 @@ public:
         inv.argv.push_back("--");
         append_agent_args(inv.argv);
 
-        inv.stdin_input = assemble_review_stdin(m_prompt, diff);
+        inv.stdin_input = assemble_review_stdin(m_prompt, request);
         inv.env_passthrough = m_env_passthrough;
         if (m_kind == ReviewerKind::Claude)
         {
@@ -185,9 +187,9 @@ public:
         }
     }
 
-    std::string run(const std::string & diff) override
+    std::string run(const ReviewRequest & request) override
     {
-        const ReviewerInvocation inv = build_invocation(diff);
+        const ReviewerInvocation inv = build_invocation(request);
         RunResult r;
         try
         {
@@ -345,9 +347,17 @@ std::unique_ptr<IReviewer> make_agent_reviewer(const Config & cfg)
 
 // Test-only — construct + introspect without spawning codexmon.
 ReviewerInvocation agent_build_invocation_for_test(
+    const Config & cfg, const ReviewRequest & request)
+{
+    return AgentReviewer(cfg).build_invocation(request);
+}
+
+ReviewerInvocation agent_build_invocation_for_test(
     const Config & cfg, const std::string & diff)
 {
-    return AgentReviewer(cfg).build_invocation(diff);
+    ReviewRequest request;
+    request.diff = diff;
+    return AgentReviewer(cfg).build_invocation(request);
 }
 
 } // namespace solvcon_bot

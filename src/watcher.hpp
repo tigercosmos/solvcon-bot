@@ -15,6 +15,7 @@ namespace solvcon_bot
 class GithubClient;
 class IReviewer;
 class StateStore;
+struct ReviewRequest;
 
 // Abstract IO surface used by Watcher. Production wires this to the
 // concrete GithubClient + IReviewer + StateStore via LiveWatcherIo;
@@ -32,9 +33,12 @@ public:
     virtual DiffResult stream_diff(int pr_number) = 0;
     virtual void post_comment(int pr_number, const std::string & body) = 0;
     virtual PrDetail get_issue_detail(int issue_number) = 0;
+    virtual PrInfo get_pr_info(int pr_number) = 0;
+    virtual FileContent get_file_at_ref(const std::string & path,
+                                        const std::string & ref) = 0;
     virtual bool is_collaborator(const std::string & user) = 0;
 
-    virtual std::string run_reviewer(const std::string & diff) = 0;
+    virtual std::string run_reviewer(const ReviewRequest & request) = 0;
 
     virtual bool reviewed(int pr_number) = 0;
     virtual void mark_reviewed(int pr_number) = 0;
@@ -63,8 +67,11 @@ public:
     DiffResult stream_diff(int pr_number) override;
     void post_comment(int pr_number, const std::string & body) override;
     PrDetail get_issue_detail(int issue_number) override;
+    PrInfo get_pr_info(int pr_number) override;
+    FileContent get_file_at_ref(const std::string & path,
+                                const std::string & ref) override;
     bool is_collaborator(const std::string & user) override;
-    std::string run_reviewer(const std::string & diff) override;
+    std::string run_reviewer(const ReviewRequest & request) override;
     bool reviewed(int pr_number) override;
     void mark_reviewed(int pr_number) override;
     bool handled(std::int64_t comment_id) override;
@@ -95,6 +102,11 @@ private:
     void run_ping_path();
     void dispatch_review(int pr_number, const std::string & source,
                          std::optional<long long> trigger_comment_id);
+    // Fetch head-side contents for files the (possibly trimmed) diff
+    // touches, within the configured count/size caps. Best-effort:
+    // fetch failures log and stop enriching, never fail the review.
+    void collect_context_files(ReviewRequest & request,
+                               const std::string & head_sha);
 
     // Stored by value: a reference member would dangle when callers
     // construct with a temporary Config (tests do exactly that).

@@ -150,6 +150,34 @@ void test_url_segment_rejects_invalid_logins()
     EXPECT_EQ(url_path_segment_encode("alice%2fbob"), std::string());
 }
 
+// --- url_encode_path ------------------------------------------------------
+
+void test_url_encode_path_passthrough_and_percent()
+{
+    namespace gd = solvcon_bot::github_detail;
+    EXPECT_EQ(gd::url_encode_path("src/reviewer.cpp"),
+              std::string("src/reviewer.cpp"));
+    EXPECT_EQ(gd::url_encode_path("a-b_c.~d"), std::string("a-b_c.~d"));
+    EXPECT_EQ(gd::url_encode_path("dir/na me.txt"),
+              std::string("dir/na%20me.txt"));
+    EXPECT_EQ(gd::url_encode_path("q?.txt"), std::string("q%3F.txt"));
+    EXPECT_EQ(gd::url_encode_path("100%.md"), std::string("100%25.md"));
+}
+
+void test_url_encode_path_rejects_traversal_and_control()
+{
+    namespace gd = solvcon_bot::github_detail;
+    EXPECT_EQ(gd::url_encode_path(""), std::string());
+    EXPECT_EQ(gd::url_encode_path("/abs/path"), std::string());
+    EXPECT_EQ(gd::url_encode_path("a/../b"), std::string());
+    EXPECT_EQ(gd::url_encode_path(".."), std::string());
+    EXPECT_EQ(gd::url_encode_path("."), std::string());
+    EXPECT_EQ(gd::url_encode_path("a/./b"), std::string());
+    EXPECT_EQ(gd::url_encode_path("a//b"), std::string());
+    EXPECT_EQ(gd::url_encode_path("trailing/"), std::string());
+    EXPECT_EQ(gd::url_encode_path(std::string("a\nb")), std::string());
+}
+
 // --- json_escape_utf8 ----------------------------------------------------
 
 void test_json_escape_quote_and_backslash()
@@ -198,6 +226,8 @@ int main()
     test_retry_after_garbage();
     test_url_segment_accepts_valid_logins();
     test_url_segment_rejects_invalid_logins();
+    test_url_encode_path_passthrough_and_percent();
+    test_url_encode_path_rejects_traversal_and_control();
     test_json_escape_quote_and_backslash();
     test_json_escape_control_chars();
     test_json_escape_utf8_preserved();

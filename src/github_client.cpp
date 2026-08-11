@@ -153,6 +153,46 @@ std::string url_path_segment_encode(const std::string & user)
     return user;
 }
 
+std::string url_encode_path(const std::string & path)
+{
+    if (path.empty() || path.front() == '/') return "";
+    std::string out;
+    out.reserve(path.size());
+    std::size_t seg_start = 0; // start of the current segment (post-encode
+                               // boundaries mirror pre-encode ones)
+    auto reject_segment = [&](std::size_t begin, std::size_t end) {
+        const std::size_t n = end - begin;
+        return n == 0 // empty segment ("//" or trailing "/")
+            || (n == 1 && path[begin] == '.')
+            || (n == 2 && path[begin] == '.' && path[begin + 1] == '.');
+    };
+    for (std::size_t i = 0; i <= path.size(); ++i)
+    {
+        if (i == path.size() || path[i] == '/')
+        {
+            if (reject_segment(seg_start, i)) return "";
+            seg_start = i + 1;
+            if (i < path.size()) out.push_back('/');
+            continue;
+        }
+        const unsigned char b = static_cast<unsigned char>(path[i]);
+        if (b < 0x20 || b == 0x7F) return "";
+        const bool unreserved = std::isalnum(b) || b == '-' || b == '.'
+                                || b == '_' || b == '~';
+        if (unreserved)
+        {
+            out.push_back(path[i]);
+        }
+        else
+        {
+            char buf[4];
+            std::snprintf(buf, sizeof(buf), "%%%02X", b);
+            out.append(buf);
+        }
+    }
+    return out;
+}
+
 } // namespace github_detail
 
 struct GithubClient::Impl
@@ -598,6 +638,123 @@ PrDetail GithubClient::get_issue_detail(int issue_number)
     return d;
 }
 
+PrInfo GithubClient::get_pr_info(int pr_number)
+{
+    auto res = impl_->get(impl_->repo_path + "/pulls/"
+                          + std::to_string(pr_number));
+    if (res->status < 200 || res->status >= 300)
+    {
+        throw GithubError(res->status,
+            "get_pr_info failed: HTTP " + std::to_string(res->status));
+    }
+    PrInfo info;
+    info.from_json(res->body);
+    return info;
+}
+
+FileContent GithubClient::get_file_at_ref(const std::string & path,
+                                          const std::string & ref)
+{
+    FileContent out;
+
+    const std::string enc_path = github_detail::url_encode_path(path);
+    if (enc_path.empty()) return out; // refused path -> not found
+
+    // The only refs we ever pass are head SHAs read back from the API.
+    // Anything else (branch names with '/', '..', query metachars) is
+    // refused rather than encoded — a bad ref here means a bug upstream,
+    // and the URL must stay unambiguous.
+    if (ref.empty() || ref.size() > 64) return out;
+    for (char c : ref)
+    {
+        if (!std::isxdigit(static_cast<unsigned char>(c))) return out;
+    }
+
+    const std::size_t cap = impl_->cfg.max_context_file_bytes;
+
+    httplib::Headers headers = impl_->default_headers;
+    for (auto it = headers.begin(); it != headers.end(); )
+    {
+        if (it->first == "Accept") it = headers.erase(it);
+        else ++it;
+    }
+    headers.emplace("Accept", "application/vnd.github.raw+json");
+
+    const std::string url = impl_->repo_path + "/contents/" + enc_path
+                            + "?ref=" + ref;
+
+    // Same shape as stream_diff: stream with an early-abort cap, retry
+    // the whole request on transient failures.
+    int attempt = 0;
+    while (true)
+    {
+        ++attempt;
+        out.body.clear();
+        out.truncated = false;
+        bool we_aborted_at_cap = false;
+
+        auto res = impl_->cli.Get(url.c_str(), headers,
+            [&](const char * data, std::size_t len) {
+                if (out.body.size() + len > cap)
+                {
+                    const std::size_t take = (cap > out.body.size())
+                        ? (cap - out.body.size()) : 0;
+                    out.body.append(data, take);
+                    out.truncated = true;
+                    we_aborted_at_cap = true;
+                    return false;
+                }
+                out.body.append(data, len);
+                return true;
+            });
+
+        if (we_aborted_at_cap)
+        {
+            out.found = true;
+            return out;
+        }
+
+        if (!res)
+        {
+            if (attempt >= 6)
+            {
+                throw GithubError(0, "file fetch network error: "
+                    + httplib::to_string(res.error()));
+            }
+            Impl::sleep_backoff(attempt, "");
+            continue;
+        }
+        if (res->status >= 200 && res->status < 300)
+        {
+            out.found = true;
+            return out;
+        }
+        if (res->status == 404)
+        {
+            out.body.clear();
+            return out;
+        }
+
+        const bool rate_limited_403 = Impl::is_rate_limited_403(res);
+        if (res->status == 429 || rate_limited_403
+            || (res->status >= 500 && res->status < 600))
+        {
+            if (attempt >= 6)
+            {
+                throw GithubError(res->status,
+                    "file fetch retry exhausted: HTTP "
+                        + std::to_string(res->status),
+                    /*transient=*/rate_limited_403);
+            }
+            Impl::sleep_backoff(attempt, Impl::header(res, "Retry-After"));
+            continue;
+        }
+        throw GithubError(res->status,
+            "file fetch failed: HTTP " + std::to_string(res->status)
+                + " for " + path);
+    }
+}
+
 bool GithubClient::is_collaborator(const std::string & user)
 {
     const std::string seg = github_detail::url_path_segment_encode(user);
@@ -633,7 +790,10 @@ DiffResult GithubClient::stream_diff(int pr_number)
 {
     DiffResult out;
     out.truncated = false;
-    const std::size_t cap = impl_->cfg.max_diff_bytes;
+    // The fetch cap is deliberately larger than MAX_DIFF_BYTES: the
+    // watcher trims an over-budget diff per file, which needs the whole
+    // diff in hand. Only a diff too big even to fetch is skipped.
+    const std::size_t cap = impl_->cfg.max_diff_fetch_bytes;
 
     httplib::Headers headers = impl_->default_headers;
     // Replace the Accept header with the diff media type.

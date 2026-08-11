@@ -107,6 +107,10 @@ Config make_cfg(const TestServer & ts)
     c.http_read_timeout_sec = 5;
     c.http_write_timeout_sec = 5;
     c.max_diff_bytes = 1024;
+    // stream_diff caps the download at the FETCH limit (the review
+    // budget above is applied later, by per-file trimming).
+    c.max_diff_fetch_bytes = 1024;
+    c.max_context_file_bytes = 1024;
     return c;
 }
 
@@ -679,6 +683,117 @@ void test_stream_diff_sends_diff_accept_header()
     EXPECT_EQ(captured_accept, std::string("application/vnd.github.diff"));
 }
 
+// --- get_pr_info ----------------------------------------------------------
+
+void test_get_pr_info_parses_title_body_head()
+{
+    TestServer ts;
+    std::string captured_accept;
+    ts.svr().Get(R"(/repos/o/r/pulls/(\d+))",
+        [&](const httplib::Request & req, httplib::Response & res) {
+            captured_accept = req.get_header_value("Accept");
+            res.status = 200;
+            res.set_content(
+                R"({"number":9,"state":"open","title":"Add thing",)"
+                R"("body":"line1\nline2","head":{"sha":"deadbeef","ref":"f"},)"
+                R"("user":{"login":"someone"}})",
+                "application/json");
+        });
+    GithubClient gh(make_cfg(ts));
+    auto info = gh.get_pr_info(9);
+    EXPECT_EQ(info.number, 9);
+    EXPECT_EQ(info.title, std::string("Add thing"));
+    EXPECT_EQ(info.body, std::string("line1\nline2"));
+    EXPECT_EQ(info.head_sha, std::string("deadbeef"));
+    // JSON accept (the default), not the diff media type.
+    EXPECT_EQ(captured_accept, std::string("application/vnd.github+json"));
+}
+
+void test_get_pr_info_non_2xx_throws()
+{
+    TestServer ts;
+    ts.svr().Get(R"(/repos/o/r/pulls/(\d+))",
+        [&](const httplib::Request &, httplib::Response & res) {
+            res.status = 404;
+            res.set_content("{}", "application/json");
+        });
+    GithubClient gh(make_cfg(ts));
+    bool threw = false;
+    try { (void)gh.get_pr_info(9); }
+    catch (const GithubError & e) { threw = (e.status() == 404); }
+    EXPECT(threw);
+}
+
+// --- get_file_at_ref ------------------------------------------------------
+
+void test_get_file_at_ref_returns_raw_content()
+{
+    TestServer ts;
+    std::string captured_accept;
+    std::string captured_ref;
+    ts.svr().Get("/repos/o/r/contents/src/a.cc",
+        [&](const httplib::Request & req, httplib::Response & res) {
+            captured_accept = req.get_header_value("Accept");
+            captured_ref = req.get_param_value("ref");
+            res.status = 200;
+            res.set_content("int a;\n", "application/vnd.github.raw+json");
+        });
+    GithubClient gh(make_cfg(ts));
+    auto fc = gh.get_file_at_ref("src/a.cc", "deadbeef");
+    EXPECT(fc.found);
+    EXPECT(!fc.truncated);
+    EXPECT_EQ(fc.body, std::string("int a;\n"));
+    EXPECT_EQ(captured_ref, std::string("deadbeef"));
+    EXPECT_EQ(captured_accept, std::string("application/vnd.github.raw+json"));
+}
+
+void test_get_file_at_ref_404_is_not_found()
+{
+    TestServer ts;
+    ts.svr().Get(R"(/repos/o/r/contents/(.+))",
+        [&](const httplib::Request &, httplib::Response & res) {
+            res.status = 404;
+            res.set_content(R"({"message":"Not Found"})", "application/json");
+        });
+    GithubClient gh(make_cfg(ts));
+    auto fc = gh.get_file_at_ref("gone.cc", "deadbeef");
+    EXPECT(!fc.found);
+    EXPECT(fc.body.empty());
+}
+
+void test_get_file_at_ref_truncates_at_per_file_cap()
+{
+    TestServer ts;
+    const std::string big(4096, 'y'); // cap is 1024 per make_cfg
+    ts.svr().Get(R"(/repos/o/r/contents/(.+))",
+        [&](const httplib::Request &, httplib::Response & res) {
+            res.status = 200;
+            res.set_content(big, "application/vnd.github.raw+json");
+        });
+    GithubClient gh(make_cfg(ts));
+    auto fc = gh.get_file_at_ref("big.bin", "deadbeef");
+    EXPECT(fc.found);
+    EXPECT(fc.truncated);
+    EXPECT(fc.body.size() <= 1024);
+}
+
+void test_get_file_at_ref_refuses_bad_path_and_ref_without_request()
+{
+    TestServer ts;
+    std::atomic<int> count{0};
+    ts.svr().Get(R"(/repos/o/r/contents/(.+))",
+        [&](const httplib::Request &, httplib::Response & res) {
+            ++count;
+            res.status = 200;
+            res.set_content("x", "application/vnd.github.raw+json");
+        });
+    GithubClient gh(make_cfg(ts));
+    EXPECT(!gh.get_file_at_ref("a/../b", "deadbeef").found);
+    EXPECT(!gh.get_file_at_ref("ok.cc", "not-a-sha!").found);
+    EXPECT(!gh.get_file_at_ref("ok.cc", "").found);
+    EXPECT_EQ(count.load(), 0); // nothing reached the server
+}
+
 // --- conditional caching (If-None-Match / ETag) -------------------------
 
 void test_conditional_etag_round_trip_304()
@@ -1055,6 +1170,13 @@ int main()
     test_stream_diff_403_rate_limited_forever_throws_transient();
     test_stream_diff_plain_403_is_not_transient();
     test_stream_diff_sends_diff_accept_header();
+
+    test_get_pr_info_parses_title_body_head();
+    test_get_pr_info_non_2xx_throws();
+    test_get_file_at_ref_returns_raw_content();
+    test_get_file_at_ref_404_is_not_found();
+    test_get_file_at_ref_truncates_at_per_file_cap();
+    test_get_file_at_ref_refuses_bad_path_and_ref_without_request();
 
     test_conditional_etag_round_trip_304();
     test_conditional_200_invalidates_cache_with_new_body();

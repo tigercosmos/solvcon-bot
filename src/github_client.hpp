@@ -45,6 +45,17 @@ struct DiffResult
     bool truncated = false;
 };
 
+// Result of fetching one repo file at a ref. `found == false` covers
+// 404 (path deleted/renamed at that ref) and paths the encoder refuses;
+// `truncated` means the file is larger than the configured per-file cap
+// and `body` holds only the leading bytes.
+struct FileContent
+{
+    bool found = false;
+    bool truncated = false;
+    std::string body;
+};
+
 // Pure helpers — exposed for unit testing. No HTTP, no I/O.
 namespace github_detail
 {
@@ -71,6 +82,12 @@ std::string url_path_segment_encode(const std::string & user);
 // platforms where `char` is signed.
 std::string json_escape_utf8(std::string_view s);
 
+// Percent-encode a repo-relative file path for use in a URL path. Keeps
+// [A-Za-z0-9._~-] and '/' verbatim, encodes everything else. Returns ""
+// (refuses) for empty paths, absolute paths, control characters, or any
+// "." / ".." segment — those could redirect the request.
+std::string url_encode_path(const std::string & path);
+
 } // namespace github_detail
 
 class GithubClient
@@ -92,6 +109,17 @@ public:
     std::vector<IssueComment> list_pr_comments(int pr_number);
 
     PrDetail get_issue_detail(int issue_number);
+
+    // GET /repos/{o}/{r}/pulls/{n} (JSON) — title, body, head sha for
+    // the review payload. Throws GithubError on non-2xx.
+    PrInfo get_pr_info(int pr_number);
+
+    // GET /repos/{o}/{r}/contents/{path}?ref={ref} with the raw media
+    // type, capped at cfg.max_context_file_bytes. 404 (and refused
+    // paths/refs) return found=false instead of throwing; other non-2xx
+    // statuses throw GithubError.
+    FileContent get_file_at_ref(const std::string & path,
+                                const std::string & ref);
 
     // true iff GET /repos/{o}/{r}/collaborators/{user} returns 204.
     // 404 ⇒ false. Any other non-2xx (including 403) throws GithubError.

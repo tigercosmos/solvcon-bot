@@ -90,8 +90,12 @@ std::vector<IssueComment> LiveWatcherIo::list_issue_comments(const std::string &
 DiffResult LiveWatcherIo::stream_diff(int n) { return gh_.stream_diff(n); }
 void LiveWatcherIo::post_comment(int n, const std::string & b) { gh_.post_comment(n, b); }
 PrDetail LiveWatcherIo::get_issue_detail(int n) { return gh_.get_issue_detail(n); }
+PrInfo LiveWatcherIo::get_pr_info(int n) { return gh_.get_pr_info(n); }
+FileContent LiveWatcherIo::get_file_at_ref(const std::string & path,
+                                           const std::string & ref)
+{ return gh_.get_file_at_ref(path, ref); }
 bool LiveWatcherIo::is_collaborator(const std::string & u) { return gh_.is_collaborator(u); }
-std::string LiveWatcherIo::run_reviewer(const std::string & d) { return rv_.run(d); }
+std::string LiveWatcherIo::run_reviewer(const ReviewRequest & r) { return rv_.run(r); }
 bool LiveWatcherIo::reviewed(int n) { return state_.reviewed(n); }
 void LiveWatcherIo::mark_reviewed(int n) { state_.mark_reviewed(n); }
 bool LiveWatcherIo::handled(std::int64_t id) { return state_.handled(id); }
@@ -399,23 +403,127 @@ void Watcher::dispatch_review(int pr_number, const std::string & source,
     DiffResult diff = io_.stream_diff(pr_number);
     if (diff.truncated)
     {
+        // Too big even to download in full — per-file trimming needs
+        // the whole diff, so all we can do is post the notice.
         const std::string body = marker + "\n\n"
-            + "(diff exceeds MAX_DIFF_BYTES="
-            + std::to_string(cfg_.max_diff_bytes) + " — skipped)\n";
+            + "(diff exceeds MAX_DIFF_FETCH_BYTES="
+            + std::to_string(cfg_.max_diff_fetch_bytes) + " — skipped)\n";
         io_.post_comment(pr_number, body);
         log_info("dispatched " + source + " for PR #" + std::to_string(pr_number)
                  + ": diff truncated, posted notice");
         return;
     }
 
-    log_info("running reviewer for PR #" + std::to_string(pr_number)
-             + " (diff " + std::to_string(diff.body.size()) + " bytes)");
-    const std::string review_output = io_.run_reviewer(diff.body);
+    ReviewRequest request;
+    request.diff = std::move(diff.body);
 
-    const std::string body = marker + "\n\n" + review_output;
+    // PR title/description tell the reviewer what the change claims to
+    // do; the head sha keys the changed-file context fetch. Both are
+    // enrichment — a transient metadata failure must not lose the
+    // review, so fall back to a bare-diff request (fatal auth errors
+    // still propagate and stop the bot).
+    PrInfo info;
+    bool have_info = false;
+    try
+    {
+        info = io_.get_pr_info(pr_number);
+        have_info = true;
+    }
+    catch (const std::exception & e)
+    {
+        if (is_fatal_github(e)) throw;
+        log_warn("get_pr_info(" + std::to_string(pr_number) + ") failed: "
+                 + e.what() + " — reviewing without PR metadata");
+    }
+    if (have_info)
+    {
+        request.pr_title = info.title;
+        request.pr_body = info.body;
+    }
+
+    // Over-budget diffs are trimmed at file-section granularity instead
+    // of skipped: the largest PRs are the ones a skipped review hurts
+    // most. Omissions are disclosed both to the reviewer (inside the
+    // fenced metadata) and to the PR readers (note under the review).
+    std::string trim_note;
+    if (request.diff.size() > cfg_.max_diff_bytes)
+    {
+        DiffTrimResult trimmed =
+            trim_diff_to_budget(request.diff, cfg_.max_diff_bytes);
+        if (trimmed.kept == 0)
+        {
+            const std::string body = marker + "\n\n"
+                + "(diff exceeds MAX_DIFF_BYTES="
+                + std::to_string(cfg_.max_diff_bytes)
+                + " and no complete file section fits the budget"
+                  " — skipped)\n";
+            io_.post_comment(pr_number, body);
+            log_info("dispatched " + source + " for PR #"
+                     + std::to_string(pr_number)
+                     + ": no file section fits MAX_DIFF_BYTES, posted notice");
+            return;
+        }
+        trim_note = "\n\n_solvcon-bot: diff exceeded MAX_DIFF_BYTES="
+            + std::to_string(cfg_.max_diff_bytes) + "; reviewed "
+            + std::to_string(trimmed.kept) + " file section(s), omitted "
+            + std::to_string(trimmed.omitted.size()) + "._\n";
+        request.diff = std::move(trimmed.diff);
+        request.omitted_files = std::move(trimmed.omitted);
+        log_info("trimmed diff for PR #" + std::to_string(pr_number)
+                 + ": kept " + std::to_string(trimmed.kept)
+                 + " file section(s), omitted "
+                 + std::to_string(request.omitted_files.size()));
+    }
+
+    if (have_info) collect_context_files(request, info.head_sha);
+
+    log_info("running reviewer for PR #" + std::to_string(pr_number)
+             + " (diff " + std::to_string(request.diff.size()) + " bytes, "
+             + std::to_string(request.context_files.size())
+             + " context file(s))");
+    const std::string review_output = io_.run_reviewer(request);
+
+    const std::string body = marker + "\n\n" + review_output + trim_note;
     io_.post_comment(pr_number, body);
     log_info("posted " + source + " review for PR #"
              + std::to_string(pr_number));
+}
+
+void Watcher::collect_context_files(ReviewRequest & request,
+                                    const std::string & head_sha)
+{
+    if (cfg_.max_context_total_bytes == 0 || cfg_.max_context_files == 0
+        || head_sha.empty())
+    {
+        return;
+    }
+
+    std::size_t total = 0;
+    std::size_t attempts = 0;
+    for (const std::string & path : changed_paths(request.diff))
+    {
+        // The count cap bounds API calls, so every attempt counts
+        // against it whether or not it yields usable content.
+        if (attempts >= cfg_.max_context_files) break;
+        ++attempts;
+
+        FileContent fc;
+        try
+        {
+            fc = io_.get_file_at_ref(path, head_sha);
+        }
+        catch (const std::exception & e)
+        {
+            log_warn("context fetch failed for " + path + ": " + e.what()
+                     + " — continuing without further context");
+            break;
+        }
+        if (!fc.found || fc.truncated) continue; // absent or over per-file cap
+        if (fc.body.find('\0') != std::string::npos) continue; // binary
+        if (total + fc.body.size() > cfg_.max_context_total_bytes) break;
+        total += fc.body.size();
+        request.context_files.push_back({path, std::move(fc.body)});
+    }
 }
 
 } // namespace solvcon_bot
